@@ -8,48 +8,28 @@
         body { margin: 0; background: #000; overflow: hidden; position: fixed; width: 100vw; height: 100vh; }
         video { display: none; }
         canvas { width: 100%; height: 100%; object-fit: contain; }
+        
+        /* ボタン専用エリア：上端44pxに固定 */
         #ui-header {
             position: absolute; top: 0; left: 0; width: 100%; height: 44px;
             display: flex; justify-content: center; align-items: center; 
             z-index: 1000; background: rgba(0,0,0,0.8);
         }
-        button { height: 34px; flex: 1; margin: 0 3px; font-size: 12px; font-weight: bold; border-radius: 4px; border: 1px solid #fff; }
+        button {
+            height: 34px; width: 28%; margin: 0 5px; font-size: 14px; font-weight: bold; 
+            border-radius: 4px; border: 1px solid #fff;
+        }
         #btn-hold { background: #fff; color: #000; }
         #btn-save { background: #2ecc71; color: #fff; display: none; }
-        #btn-ratio { background: #3498db; color: #fff; }
-        
-        /* 被らないように位置を top: 110px に下げました */
-        #ratio-container {
-            position: fixed;
-            bottom: 20px; /* 最下段 */
-            left: 50%;
-            transform: translateX(-50%);
-            width: 80%;
-            background: rgba(0,0,0,0.7);
-            padding: 15px;
-            border-radius: 10px;
-            display: none;
-            z-index: 100;
-        }
-        #ratio-container input {
-            width: 100%;
-        }
+        #btn-cancel { background: #e74c3c; color: #fff; display: none; }
     </style>
 </head>
 <body>
     <div id="ui-header">
         <button id="btn-hold" onclick="toggleHold(true)">ホールド</button>
-        <button id="btn-ratio" onclick="toggleRatioUI()">倍率調整</button>
-        <button id="btn-cancel" onclick="toggleHold(false)" style="display:none; background:#e74c3c; color:#fff;">戻る</button>
+        <button id="btn-cancel" onclick="toggleHold(false)">戻る</button>
         <button id="btn-save" onclick="finalizeAndSave()">確定・保存</button>
     </div>
-
-    <div id="ratio-container">
-        <div>倍率校正 (mm/px): <span id="ratio-val">0.400</span></div>
-        <input type="range" id="ratio-slider" min="0.1" max="1.0" step="0.001" value="0.400" oninput="updateRatio(this.value)">
-        <button onclick="toggleRatioUI()" style="width:100px; margin-top:10px;">閉じる</button>
-    </div>
-
     <video id="video" autoplay playsinline></video>
     <canvas id="canvas-measure"></canvas>
     <script src="app.js"></script>
