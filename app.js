@@ -79,9 +79,25 @@ function drawOverlay() {
     const fSize = canvas.height / 22;
     const textY = 100;
     
-    // 表示項目：水槽番号 No. 尾叉 全長
+    // ガイド線の描画（これを見て定規の目盛りと合わせます）
+    const p1x = (points.p1.x / 1920) * canvas.width;
+    const p1y = (points.p1.y / 1080) * canvas.height;
+    const p2x = (points.p2.x / 1920) * canvas.width;
+    const p2y = (points.p2.y / 1080) * canvas.height;
+
+    ctx.strokeStyle = "rgba(255, 255, 0, 0.8)"; // 黄色の半透明
+    ctx.lineWidth = 3;
+    ctx.setLineDash([5, 5]); // 点線
+    ctx.beginPath();
+    ctx.moveTo(p1x, p1y);
+    ctx.lineTo(p2x, p2y);
+    ctx.stroke();
+    ctx.setLineDash([]); // 点線を戻す
+
+    // 計測値の表示
     drawStyledText(`水槽${tankId}  No.${String(currentNo).padStart(3, '0')}  尾叉:${res.fork}mm  全長:${res.total}mm`, 20, textY, fSize);
 
+    // 各点の描画
     Object.values(points).forEach(p => {
         const px = (p.x / 1920) * canvas.width;
         const py = (p.y / 1080) * canvas.height;
