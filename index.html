@@ -3,43 +3,44 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Fish-Measure Pro</title>
+    <title>Fish-Measure AR Pro</title>
     <script src="https://docs.opencv.org/4.x/opencv.js"></script>
     <style>
         body { margin: 0; background: #000; color: #fff; font-family: sans-serif; overflow: hidden; touch-action: none; }
         #container { position: relative; width: 100vw; height: 100vh; display: flex; justify-content: center; align-items: center; }
-        video, canvas { position: absolute; max-width: 100%; max-height: 100%; object-fit: contain; }
+        video { display: none; } /* 直接は見せずCanvasに描画 */
+        canvas { width: 100%; height: 100%; object-fit: contain; background: #222; }
         
-        /* UIレイヤー */
-        #controls { position: absolute; bottom: 20px; right: 20px; display: flex; flex-direction: column; gap: 10px; pointer-events: auto; }
-        button { padding: 15px; font-size: 16px; border-radius: 10px; border: none; background: #eee; color: #000; font-weight: bold; cursor: pointer; }
-        #btn-save { background: #4CAF50; color: white; }
-        #btn-cancel { background: #f44336; color: white; }
+        #ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
         
-        #info-overlay { position: absolute; top: 10px; right: 10px; pointer-events: none; }
-        #no-display { font-size: 24px; font-weight: bold; color: #000; background: rgba(255,255,255,0.7); padding: 5px 10px; }
-        
-        #rotate-btn { position: absolute; top: 10px; left: 10px; }
-        .portrait { transform: rotate(90deg); transform-origin: center; }
+        /* メッセージ表示エリア (上部に移動) */
+        #status-bar { position: absolute; top: 60px; left: 20px; padding: 10px 20px; border-radius: 8px; font-weight: bold; font-size: 18px; pointer-events: none; }
+        .mode-detect { background: rgba(0, 255, 0, 0.7); color: #000; }
+        .mode-hold { background: rgba(0, 120, 255, 0.9); color: #fff; }
+
+        /* 右上No表示 */
+        #no-display { position: absolute; top: 10px; right: 10px; font-size: 24px; font-weight: bold; color: #000; background: rgba(255,255,255,0.8); padding: 5px 15px; border-radius: 5px; }
+
+        /* 右側操作ボタン */
+        #controls { position: absolute; top: 50%; right: 20px; transform: translateY(-50%); display: flex; flex-direction: column; gap: 15px; pointer-events: auto; }
+        button { width: 140px; padding: 20px 10px; font-size: 16px; border-radius: 12px; border: 2px solid #fff; font-weight: bold; cursor: pointer; }
+        #btn-hold { background: #eee; color: #000; }
+        #btn-save { background: #2ecc71; color: #fff; display: none; }
+        #btn-cancel { background: #e74c3c; color: #fff; display: none; }
     </style>
 </head>
 <body>
     <div id="container">
         <video id="video" autoplay playsinline></video>
         <canvas id="canvas-measure"></canvas>
-        
-        <div id="info-overlay">
+        <div id="ui-layer">
             <div id="no-display">No. ---</div>
-        </div>
-
-        <div id="rotate-btn">
-            <button onclick="toggleRotation()">画面回転</button>
-        </div>
-
-        <div id="controls">
-            <button id="btn-hold" onclick="toggleHold(true)">ホールド (音声:チェック)</button>
-            <button id="btn-cancel" onclick="toggleHold(false)" style="display:none;">キャンセル (戻る)</button>
-            <button id="btn-save" onclick="finalizeAndSave()" style="display:none;">確定・次へ (音声:パス)</button>
+            <div id="status-bar" class="mode-detect">【追従中】ホールド/チェック</div>
+            <div id="controls">
+                <button id="btn-hold" onclick="toggleHold(true)">ホールド</button>
+                <button id="btn-cancel" onclick="toggleHold(false)">戻る</button>
+                <button id="btn-save" onclick="finalizeAndSave()">確定・次へ</button>
+            </div>
         </div>
     </div>
     <script src="app.js"></script>
