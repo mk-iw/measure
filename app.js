@@ -2,9 +2,9 @@ let currentNo = 1;
 let isHolding = false;
 let lastCapturedFrame = null;
 let points = {
-    p1: {x: 480, y: 540, label: "口先"},
-    p2: {x: 960, y: 540, label: "尾叉"},
-    p3: {x: 1200, y: 540, label: "尾先"}
+    p1: {x: 400, y: 500, label: "口先"},
+    p2: {x: 900, y: 500, label: "尾叉"},
+    p3: {x: 1200, y: 500, label: "尾先"}
 };
 let activePoint = null;
 
@@ -17,11 +17,12 @@ window.onload = async () => {
     currentNo = parseInt(startNo) || 1;
     try {
         const s = await navigator.mediaDevices.getUserMedia({
-            video: { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1080 } }
+            video: { facingMode: "environment", width: 1920, height: 1080 }
         });
         video.srcObject = s;
-        video.onloadedmetadata = () => { video.play(); render(); };
-    } catch (e) { alert("カメラ起動失敗: " + e); }
+        video.play();
+        render();
+    } catch (e) { alert("カメラエラー"); }
     initSpeech();
     initTouchEvents();
 };
@@ -56,30 +57,21 @@ function toggleHold(state) {
 }
 
 function render() {
-    // 描画サイズを現在のブラウザ枠に合わせる
     canvas.width = window.innerWidth * window.devicePixelRatio;
     canvas.height = window.innerHeight * window.devicePixelRatio;
     
-    const vw = video.videoWidth || 1;
-    const vh = video.videoHeight || 1;
-    
-    ctx.save();
-    // 常に「画面の横幅」を基準に映像を合わせる
-    const scale = canvas.width / vw;
-    ctx.scale(scale, scale);
-
     const img = (isHolding && lastCapturedFrame) ? lastCapturedFrame : video;
-    ctx.drawImage(img, 0, 0);
+    
+    // 映像を画面いっぱいに描画
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
-    // 情報を描画 (映像の左上に集約)
+    // オーバーレイ描画
     drawOverlay();
-
-    ctx.restore();
     requestAnimationFrame(render);
 }
 
 function drawOverlay() {
-    const mmRatio = 0.4; // 倍率
+    const mmRatio = 0.4; // 現場の比率
     const forkPx = Math.hypot(points.p2.x - points.p1.x, points.p2.y - points.p1.y);
     const ax = points.p2.x - points.p1.x, ay = points.p2.y - points.p1.y;
     const bx = points.p3.x - points.p1.x, by = points.p3.y - points.p1.y;
@@ -90,22 +82,28 @@ function drawOverlay() {
         total: (totalPx * mmRatio).toFixed(1) 
     };
 
-    // 全てのテキストを画面上部（ボタンの下）に配置
-    const topMargin = 150; 
-    drawStyledText(`No.${String(currentNo).padStart(3, '0')}  尾叉:${res.fork}mm  全長:${res.total}mm`, 30, topMargin, 60);
-    drawStyledText(isHolding ? "【固定中】" : "【追従中】", 30, topMargin + 80, 45);
+    // 全ての情報を画面上部（ボタンの下あたり）に一列で配置
+    // 文字サイズを適切に調整 (画面の高さの約1/15)
+    const fSize = canvas.height / 15;
+    const textY = 120; // ボタンの下の余白
 
-    // ポイント
+    drawStyledText(`No.${String(currentNo).padStart(3, '0')}  尾叉:${res.fork}  全長:${res.total}`, 20, textY, fSize);
+    drawStyledText(isHolding ? "[固定]" : "[追従]", canvas.width - 250, textY, fSize * 0.7);
+
+    // 計測点
     Object.values(points).forEach(p => {
-        ctx.fillStyle = "black"; ctx.beginPath(); ctx.arc(p.x, p.y, 15, 0, Math.PI*2); ctx.fill();
-        ctx.strokeStyle = "white"; ctx.lineWidth = 4; ctx.stroke();
-        drawStyledText(p.label, p.x + 30, p.y - 30, 40);
+        // 描画座標への変換
+        const px = (p.x / 1920) * canvas.width;
+        const py = (p.y / 1080) * canvas.height;
+        ctx.fillStyle = "black"; ctx.beginPath(); ctx.arc(px, py, 12, 0, Math.PI*2); ctx.fill();
+        ctx.strokeStyle = "white"; ctx.lineWidth = 2; ctx.stroke();
+        drawStyledText(p.label, px + 15, py - 15, fSize * 0.5);
     });
 }
 
 function drawStyledText(txt, x, y, size) {
     ctx.font = `bold ${size}px sans-serif`;
-    ctx.strokeStyle = "white"; ctx.lineWidth = 6;
+    ctx.strokeStyle = "white"; ctx.lineWidth = 4;
     ctx.strokeText(txt, x, y);
     ctx.fillStyle = "black";
     ctx.fillText(txt, x, y);
@@ -124,8 +122,10 @@ function initTouchEvents() {
     const getPos = (e) => {
         const r = canvas.getBoundingClientRect();
         const t = e.touches[0];
-        const scale = video.videoWidth / r.width;
-        return { x: (t.clientX - r.left) * scale, y: (t.clientY - r.top) * scale };
+        return { 
+            x: (t.clientX - r.left) * (1920 / r.width), 
+            y: (t.clientY - r.top) * (1080 / r.height) 
+        };
     };
     canvas.addEventListener('touchstart', (e) => {
         if(!isHolding) return;
