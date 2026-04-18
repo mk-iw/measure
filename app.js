@@ -8,7 +8,6 @@ const lctx = lastCapturedFrame.getContext('2d', { alpha: false });
 const offscreen = document.createElement('canvas');
 const octx = offscreen.getContext('2d', { willReadFrequently: true });
 
-// 初期位置を中央付近に設定
 let points = {
     p1: {x: 400, y: 540, label: "口先"},
     p2: {x: 900, y: 540, label: "尾叉"},
@@ -53,9 +52,8 @@ async function asyncDetect() {
     const imgData = await new Promise(r => setTimeout(() => r(octx.getImageData(0, 0, sw, sh)), 0));
     const data = imgData.data;
 
-    // 【修正】ベースY座標を画面中央(1080の半分=540)に固定。±20%の範囲で制限。
     let baseY = (points.p1.y + points.p2.y) / 2;
-    if (Math.abs(baseY - 540) > 216) { baseY = 540; } // 216px = 1080pxの20%
+    if (Math.abs(baseY - 540) > 216) { baseY = 540; } 
 
     const scanY = baseY * (sh / 1080);
     const scanLines = [scanY - 10, scanY, scanY + 10];
@@ -85,8 +83,6 @@ async function asyncDetect() {
     if (validY.length > 0) {
         const scale = 1920 / sw;
         const detectedY = (validY.reduce((a,b)=>a+b)/validY.length) * (1080/sh);
-        
-        // 検出結果が中央±20%を超えないようガード
         const finalY = Math.max(324, Math.min(756, detectedY));
 
         points.p1.x = allMinX * scale;
@@ -122,9 +118,8 @@ function render() {
     const imgSource = (isHolding) ? lastCapturedFrame : video;
     ctx.drawImage(imgSource, ox, oy, 1920 * scale, 1080 * scale);
 
-    // 【修正】スキャンガイドを「緑の帯」にし、中央付近に固定表示
     if (!isHolding) {
-        ctx.fillStyle = "rgba(0, 255, 0, 0.15)"; // 緑の透過
+        ctx.fillStyle = "rgba(0, 255, 0, 0.15)";
         const guideY = oy + (points.p1.y * scale) - (30 * scale);
         ctx.fillRect(ox, guideY, 1920 * scale, 60 * scale);
     }
@@ -191,23 +186,33 @@ function finalizeAndSave() {
 function initTouchEvents() {
     const getPos = (e) => {
         const r = canvas.getBoundingClientRect();
-        const stageW = r.width * window.devicePixelRatio, stageH = r.height * window.devicePixelRatio;
-        const scale = Math.min(stageW / 1920, stageH / 1080);
-        const ox = (stageW - 1920 * scale) / 2, oy = (stageH - 1080 * scale) / 2;
-        const t = e.touches[0];
-        const tx = (t.clientX - r.left) * window.devicePixelRatio, ty = (t.clientY - r.top) * window.devicePixelRatio;
+        const tx = (e.touches[0].clientX - r.left) * (canvas.width / r.width);
+        const ty = (e.touches[0].clientY - r.top) * (canvas.height / r.height);
+        
+        const scale = Math.min(canvas.width / 1920, canvas.height / 1080);
+        const ox = (canvas.width - 1920 * scale) / 2;
+        const oy = (canvas.height - 1080 * scale) / 2;
+        
         return { x: (tx - ox) / scale, y: (ty - oy) / scale };
     };
+
     canvas.addEventListener('touchstart', (e) => {
         if(!isHolding) return;
         const pos = getPos(e);
         activePoint = null;
-        let minDist = 70; 
-        Object.values(points).forEach(p => {
+        let minDist = 80; // 判定範囲を少し広めに確保
+        
+        // p3(尾先)を判定の優先順位に入れるため、逆順または距離で厳密に評価
+        const pointList = Object.values(points);
+        pointList.forEach(p => {
             const d = Math.hypot(p.x - pos.x, p.y - pos.y);
-            if (d < minDist) { minDist = d; activePoint = p; }
+            if (d < minDist) {
+                minDist = d;
+                activePoint = p;
+            }
         });
     });
+
     canvas.addEventListener('touchmove', (e) => {
         if(activePoint) {
             const pos = getPos(e);
