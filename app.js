@@ -1,12 +1,13 @@
 let currentNo = 1;
 let isHolding = false;
+let lastCapturedFrame = null;
 let points = {
-    p1: {x: 400, y: 300, label: "口先"},
-    p2: {x: 800, y: 400, label: "尾叉"},
-    p3: {x: 1000, y: 300, label: "尾先"}
+    p1: {x: 300, y: 200, label: "口先"},
+    p2: {x: 700, y: 300, label: "尾叉"},
+    p3: {x: 900, y: 200, label: "尾先"}
 };
 let activePoint = null;
-let lastCapturedFrame = null;
+
 const video = document.getElementById('video');
 const canvas = document.getElementById('canvas-measure');
 const ctx = canvas.getContext('2d');
@@ -16,7 +17,7 @@ window.onload = async () => {
     currentNo = parseInt(startNo) || 1;
     await startCamera();
     initSpeech();
-    initDragEvents();
+    initTouchEvents();
     render();
 };
 
@@ -25,128 +26,129 @@ async function startCamera() {
         video: { facingMode: "environment", width: 1920, height: 1080 }
     });
     video.srcObject = s;
-    video.play();
+    await video.play();
 }
 
 function initSpeech() {
-    const recognition = new (window.webkitSpeechRecognition || window.SpeechRecognition)();
-    recognition.lang = 'ja-JP';
-    recognition.continuous = true;
-    recognition.onresult = (e) => {
+    const Speech = window.webkitSpeechRecognition || window.SpeechRecognition;
+    const rec = new Speech();
+    rec.lang = 'ja-JP';
+    rec.continuous = true;
+    rec.onresult = (e) => {
         const cmd = e.results[e.results.length - 1][0].transcript;
         if(cmd.match(/チェック|ホールド/)) toggleHold(true);
         if(cmd.match(/パス|ネクスト/) && isHolding) finalizeAndSave();
     };
-    recognition.start();
-    recognition.onend = () => recognition.start(); // 音声認識が切れたら自動再開
+    rec.start();
+    rec.onend = () => rec.start();
 }
 
 function toggleHold(state) {
     isHolding = state;
     if (state) {
         lastCapturedFrame = document.createElement('canvas');
-        lastCapturedFrame.width = canvas.width;
-        lastCapturedFrame.height = canvas.height;
+        lastCapturedFrame.width = 1920; 
+        lastCapturedFrame.height = 1080;
         lastCapturedFrame.getContext('2d').drawImage(video, 0, 0);
     } else {
         lastCapturedFrame = null;
     }
-    updateButtons();
-}
-
-function updateButtons() {
-    document.getElementById('btn-hold').style.display = isHolding ? 'none' : 'block';
-    document.getElementById('btn-save').style.display = isHolding ? 'block' : 'none';
-    document.getElementById('btn-cancel').style.display = isHolding ? 'block' : 'none';
 }
 
 function render() {
-    canvas.width = video.videoWidth || 1920;
-    canvas.height = video.videoHeight || 1080;
+    // 常に画面いっぱいに描画
+    canvas.width = window.innerWidth * window.devicePixelRatio;
+    canvas.height = window.innerHeight * window.devicePixelRatio;
+    const cw = canvas.width;
+    const ch = canvas.height;
 
-    // 背景描画（ホールド中は静止画、それ以外はライブ）
-    if (isHolding && lastCapturedFrame) {
-        ctx.drawImage(lastCapturedFrame, 0, 0);
-    } else {
-        ctx.drawImage(video, 0, 0);
-    }
+    ctx.save();
+    // 画面中央を軸に90度回転させて「横長」に見せる
+    ctx.translate(cw / 2, ch / 2);
+    ctx.rotate(Math.PI / 2);
+    
+    // 回転後の座標系での描画幅（スマホの縦が横になる）
+    const drawW = ch; 
+    const drawH = cw;
 
-    // 文字とポイントの描画
-    drawUI();
+    // 背景描画
+    const img = (isHolding && lastCapturedFrame) ? lastCapturedFrame : video;
+    ctx.drawImage(img, -drawW/2, -drawH/2, drawW, drawH);
+
+    // 数値計算と描画（この中では横長1920x1080の座標系で考える）
+    drawOverlay(drawW, drawH);
+
+    ctx.restore();
     requestAnimationFrame(render);
 }
 
-function drawUI() {
-    const res = calculate();
-    // 1. 状態表示（左上）
-    drawText(isHolding ? "【固定】調整してパス/ネクスト" : "【追従】チェック/ホールド", 20, 50, 35);
-    
-    // 2. 計測値（左下）
-    drawText(`尾叉長: ${res.fork}mm`, 40, canvas.height - 120, 55);
-    drawText(`全　長: ${res.total}mm`, 40, canvas.height - 50, 55);
+function drawOverlay(w, h) {
+    const forkPx = Math.hypot(points.p2.x - points.p1.x, points.p2.y - points.p1.y);
+    const ax = points.p2.x - points.p1.x, ay = points.p2.y - points.p1.y;
+    const bx = points.p3.x - points.p1.x, by = points.p3.y - points.p1.y;
+    const totalPx = (ax * bx + ay * by) / Math.sqrt(ax * ax + ay * ay);
+    const mmRatio = 0.4; // settingsから取得する実倍率
 
-    // 3. No表示（右上）
-    drawText(`No. ${String(currentNo).padStart(3, '0')}`, canvas.width - 250, 60, 55);
+    const res = { fork: (forkPx * mmRatio).toFixed(1), total: (totalPx * mmRatio).toFixed(1) };
+
+    // 全体の文字サイズ調整
+    const baseS = h / 20;
+
+    // 1. 状態 (左上端)
+    drawStyledText(isHolding ? "【固定】パス/ネクストで保存" : "【追従】チェック/ホールド", -w/2 + 20, -h/2 + 50, baseS * 0.8);
+    
+    // 2. 計測値 (左下端)
+    drawStyledText(`尾叉長: ${res.fork}mm`, -w/2 + 30, h/2 - 100, baseS * 1.5);
+    drawStyledText(`全　長: ${res.total}mm`, -w/2 + 30, h/2 - 30, baseS * 1.5);
+
+    // 3. No表示 (右上端)
+    drawStyledText(`No. ${String(currentNo).padStart(3, '0')}`, w/2 - 200, -h/2 + 60, baseS * 1.2);
 
     // 4. ポイント
     Object.values(points).forEach(p => {
-        ctx.fillStyle = "black";
-        ctx.beginPath(); ctx.arc(p.x, p.y, 18, 0, Math.PI*2); ctx.fill();
-        ctx.strokeStyle = "white"; ctx.lineWidth = 3; ctx.stroke();
-        drawText(p.label, p.x + 30, p.y - 20, 30);
+        const px = p.x / 1920 * w - w/2;
+        const py = p.y / 1080 * h - h/2;
+        ctx.fillStyle = "black"; ctx.beginPath(); ctx.arc(px, py, 15, 0, Math.PI*2); ctx.fill();
+        ctx.strokeStyle = "white"; ctx.lineWidth = 2; ctx.stroke();
+        drawStyledText(p.label, px + 20, py - 20, baseS * 0.6);
     });
 }
 
-function drawText(txt, x, y, size) {
+function drawStyledText(txt, x, y, size) {
     ctx.font = `bold ${size}px sans-serif`;
-    ctx.strokeStyle = "white"; ctx.lineWidth = 6;
+    ctx.strokeStyle = "white"; ctx.lineWidth = 4;
     ctx.strokeText(txt, x, y);
     ctx.fillStyle = "black";
     ctx.fillText(txt, x, y);
 }
 
 function finalizeAndSave() {
-    // 1. 画像生成
     const link = document.createElement('a');
     const dateStr = new Date().toISOString().slice(2,10).replace(/-/g,'');
     link.download = `${dateStr}_No${String(currentNo).padStart(3, '0')}.png`;
     link.href = canvas.toDataURL("image/png");
     link.click();
 
-    // 2. 即座に状態リセット（これを先にやることでカメラを止めない）
     currentNo++;
-    isHolding = false;
-    lastCapturedFrame = null;
-    updateButtons();
+    toggleHold(false);
 }
 
-function calculate() {
-    const mmRatio = 0.4; // 現場に合わせてsettings.jsonから読み込む値
-    const forkPx = Math.hypot(points.p2.x - points.p1.x, points.p2.y - points.p1.y);
-    const ax = points.p2.x - points.p1.x, ay = points.p2.y - points.p1.y;
-    const bx = points.p3.x - points.p1.x, by = points.p3.y - points.p1.y;
-    const totalPx = (ax * bx + ay * by) / Math.sqrt(ax * ax + ay * ay);
-    return { fork: (forkPx * mmRatio).toFixed(1), total: (totalPx * mmRatio).toFixed(1) };
-}
-
-function initDragEvents() {
-    const getPos = (e) => {
-        const rect = canvas.getBoundingClientRect();
-        const t = e.touches ? e.touches[0] : e;
-        return {
-            x: (t.clientX - rect.left) * (canvas.width / rect.width),
-            y: (t.clientY - rect.top) * (canvas.height / rect.height)
-        };
-    };
+function initTouchEvents() {
     canvas.addEventListener('touchstart', (e) => {
         if(!isHolding) return;
-        const pos = getPos(e);
-        activePoint = Object.values(points).find(p => Math.hypot(p.x - pos.x, p.y - pos.y) < 100);
+        const rect = canvas.getBoundingClientRect();
+        const t = e.touches[0];
+        // 回転を考慮した座標変換
+        const tx = (t.clientY - rect.top) * (1920 / rect.height);
+        const ty = (rect.right - t.clientX) * (1080 / rect.width);
+        activePoint = Object.values(points).find(p => Math.hypot(p.x - tx, p.y - ty) < 100);
     });
     canvas.addEventListener('touchmove', (e) => {
         if(activePoint) {
-            const pos = getPos(e);
-            activePoint.x = pos.x; activePoint.y = pos.y;
+            const rect = canvas.getBoundingClientRect();
+            const t = e.touches[0];
+            activePoint.x = (t.clientY - rect.top) * (1920 / rect.height);
+            activePoint.y = (rect.right - t.clientX) * (1080 / rect.width);
             e.preventDefault();
         }
     }, {passive: false});
