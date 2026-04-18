@@ -3,17 +3,26 @@ let tankId = "1";
 let mmRatio = 0.400;
 let isHolding = false;
 let lastCapturedFrame = null;
-let measurementLogs = []; // 直近3件の履歴用
+let measurementLogs = [];
 let points = {
     p1: {x: 400, y: 500, label: "口先"},
     p2: {x: 900, y: 500, label: "尾叉"},
     p3: {x: 1200, y: 500, label: "尾先"}
 };
 let activePoint = null;
+let cvReady = false;
 
 const video = document.getElementById('video');
 const canvas = document.getElementById('canvas-measure');
 const ctx = canvas.getContext('2d');
+
+// OpenCVの初期化待ち
+if (typeof cv !== 'undefined') {
+    cv['onRuntimeInitialized'] = () => { 
+        cvReady = true; 
+        console.log("OpenCV Ready"); 
+    };
+}
 
 window.onload = async () => {
     tankId = prompt("水槽番号を入力", "1") || "1";
@@ -46,12 +55,71 @@ function toggleHold(state) {
         lastCapturedFrame = document.createElement('canvas');
         lastCapturedFrame.width = video.videoWidth;
         lastCapturedFrame.height = video.videoHeight;
-        lastCapturedFrame.getContext('2d').drawImage(video, 0, 0);
+        const ctxTemp = lastCapturedFrame.getContext('2d');
+        ctxTemp.drawImage(video, 0, 0);
+
+        // ホールドした瞬間に自動検出を実行
+        if (cvReady) {
+            detectFishPoints(lastCapturedFrame);
+        }
     }
     document.getElementById('btn-hold').style.display = isHolding ? 'none' : 'block';
     document.getElementById('btn-ratio').style.display = isHolding ? 'none' : 'block';
     document.getElementById('btn-save').style.display = isHolding ? 'block' : 'none';
     document.getElementById('btn-cancel').style.display = isHolding ? 'block' : 'none';
+}
+
+// --- 魚体自動検出ロジック ---
+function detectFishPoints(sourceCanvas) {
+    let src = cv.imread(sourceCanvas);
+    let gray = new cv.Mat();
+    let blurred = new cv.Mat();
+    let thresh = new cv.Mat();
+    let contours = new cv.VecVector();
+    let hierarchy = new cv.Mat();
+
+    // グレースケール化とノイズ除去
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+    cv.GaussianBlur(gray, blurred, new cv.Size(7, 7), 0);
+
+    // 二値化（背景と魚の分離）
+    cv.threshold(blurred, thresh, 0, 255, cv.THRESH_BINARY_INV + cv.THRESH_OTSU);
+
+    // 輪郭抽出
+    cv.findContours(thresh, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+    if (contours.size() > 0) {
+        // 最大面積の輪郭を魚として特定
+        let maxContour = contours.get(0);
+        let maxArea = cv.contourArea(maxContour);
+        for (let i = 1; i < contours.size(); ++i) {
+            let area = cv.contourArea(contours.get(i));
+            if (area > maxArea) {
+                maxArea = area;
+                maxContour = contours.get(i);
+            }
+        }
+
+        // 魚の境界ボックスを取得
+        let rect = cv.boundingRect(maxContour);
+        
+        // 1920x1080座標系へ変換
+        const scaleX = 1920 / sourceCanvas.width;
+        const scaleY = 1080 / sourceCanvas.height;
+
+        // 左端を口先、右端を尾先に設定（Y軸は中心を通す）
+        points.p1.x = rect.x * scaleX;
+        points.p1.y = (rect.y + rect.height / 2) * scaleY;
+
+        points.p3.x = (rect.x + rect.width) * scaleX;
+        points.p3.y = (rect.y + rect.height / 2) * scaleY;
+
+        // 尾叉は尾先の少し内側に仮吸着
+        points.p2.x = (rect.x + rect.width * 0.92) * scaleX;
+        points.p2.y = (rect.y + rect.height / 2) * scaleY;
+    }
+
+    src.delete(); gray.delete(); blurred.delete(); thresh.delete(); contours.delete(); hierarchy.delete();
 }
 
 function render() {
@@ -92,7 +160,7 @@ function drawOverlay() {
     // メイン表示
     drawStyledText(`水槽${tankId}  No.${String(currentNo).padStart(3, '0')}  尾叉:${res.fork}mm  全長:${res.total}mm`, 20, textY, fSize);
 
-    // 履歴ログ表示 (右上に配置)
+    // 履歴ログ表示
     measurementLogs.forEach((log, i) => {
         ctx.globalAlpha = 0.6 - (i * 0.2);
         drawStyledText(log, canvas.width - (fSize * 6), textY + (i * (fSize * 1.2)), fSize * 0.6);
@@ -114,7 +182,6 @@ function finalizeAndSave() {
                     ("0" + (now.getMonth() + 1)).slice(-2) + 
                     ("0" + now.getDate()).slice(-2);
     
-    // ログに記録
     const forkPx = Math.hypot(points.p2.x - points.p1.x, points.p2.y - points.p1.y);
     const forkMm = (forkPx * mmRatio).toFixed(1);
     measurementLogs.unshift(`No.${currentNo}: ${forkMm}mm`);
