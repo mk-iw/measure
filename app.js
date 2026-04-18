@@ -3,6 +3,7 @@ let tankId = "1";
 let mmRatio = 0.400;
 let isHolding = false;
 let lastCapturedFrame = null;
+let measurementLogs = []; // 直近3件の履歴用
 let points = {
     p1: {x: 400, y: 500, label: "口先"},
     p2: {x: 900, y: 500, label: "尾叉"},
@@ -15,10 +16,9 @@ const canvas = document.getElementById('canvas-measure');
 const ctx = canvas.getContext('2d');
 
 window.onload = async () => {
-    tankId = prompt("水槽番号を入力してください", "1") || "1";
+    tankId = prompt("水槽番号を入力", "1") || "1";
     const startNo = prompt("開始No.", "001");
     currentNo = parseInt(startNo) || 1;
-    
     try {
         const s = await navigator.mediaDevices.getUserMedia({
             video: { facingMode: "environment", width: 1920, height: 1080 }
@@ -79,25 +79,26 @@ function drawOverlay() {
     const fSize = canvas.height / 22;
     const textY = 100;
     
-    // ガイド線の描画（これを見て定規の目盛りと合わせます）
+    // ガイド点線
     const p1x = (points.p1.x / 1920) * canvas.width;
     const p1y = (points.p1.y / 1080) * canvas.height;
     const p2x = (points.p2.x / 1920) * canvas.width;
     const p2y = (points.p2.y / 1080) * canvas.height;
+    ctx.strokeStyle = "rgba(255, 255, 0, 0.8)";
+    ctx.lineWidth = 3; ctx.setLineDash([5, 5]);
+    ctx.beginPath(); ctx.moveTo(p1x, p1y); ctx.lineTo(p2x, p2y); ctx.stroke();
+    ctx.setLineDash([]);
 
-    ctx.strokeStyle = "rgba(255, 255, 0, 0.8)"; // 黄色の半透明
-    ctx.lineWidth = 3;
-    ctx.setLineDash([5, 5]); // 点線
-    ctx.beginPath();
-    ctx.moveTo(p1x, p1y);
-    ctx.lineTo(p2x, p2y);
-    ctx.stroke();
-    ctx.setLineDash([]); // 点線を戻す
-
-    // 計測値の表示
+    // メイン表示
     drawStyledText(`水槽${tankId}  No.${String(currentNo).padStart(3, '0')}  尾叉:${res.fork}mm  全長:${res.total}mm`, 20, textY, fSize);
 
-    // 各点の描画
+    // 履歴ログ表示 (右上に配置)
+    measurementLogs.forEach((log, i) => {
+        ctx.globalAlpha = 0.6 - (i * 0.2);
+        drawStyledText(log, canvas.width - (fSize * 6), textY + (i * (fSize * 1.2)), fSize * 0.6);
+    });
+    ctx.globalAlpha = 1.0;
+
     Object.values(points).forEach(p => {
         const px = (p.x / 1920) * canvas.width;
         const py = (p.y / 1080) * canvas.height;
@@ -108,14 +109,18 @@ function drawOverlay() {
 }
 
 function finalizeAndSave() {
-    // 日付文字列の作成 (YYMMDD)
     const now = new Date();
     const dateStr = now.getFullYear().toString().slice(-2) + 
                     ("0" + (now.getMonth() + 1)).slice(-2) + 
                     ("0" + now.getDate()).slice(-2);
     
+    // ログに記録
+    const forkPx = Math.hypot(points.p2.x - points.p1.x, points.p2.y - points.p1.y);
+    const forkMm = (forkPx * mmRatio).toFixed(1);
+    measurementLogs.unshift(`No.${currentNo}: ${forkMm}mm`);
+    if (measurementLogs.length > 3) measurementLogs.pop();
+
     const fileName = `水槽${tankId}_${dateStr}_No${String(currentNo).padStart(3, '0')}.png`;
-    
     const link = document.createElement('a');
     link.href = canvas.toDataURL("image/png");
     link.download = fileName;
@@ -125,7 +130,6 @@ function finalizeAndSave() {
     toggleHold(false);
 }
 
-// 拡大窓、描画テキスト、タッチイベントのロジックは前回同様のため維持
 function drawMagnifier() {
     const size = 220; const mag = 2.2;
     const px = (activePoint.x / 1920) * canvas.width;
