@@ -28,7 +28,7 @@ window.onload = async () => {
 };
 
 function initSpeech() {
-    const Rec = window.webkitSpeechRecognition || window.SpeechRecognition;
+    const Rec = window.webkitSpeechRecognition || window.Recognition;
     if(!Rec) return;
     const rec = new Rec();
     rec.lang = 'ja-JP'; rec.continuous = true;
@@ -61,17 +61,14 @@ function render() {
     canvas.height = window.innerHeight * window.devicePixelRatio;
     
     const img = (isHolding && lastCapturedFrame) ? lastCapturedFrame : video;
-    
-    // 映像を画面いっぱいに描画
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
-    // オーバーレイ描画
     drawOverlay();
     requestAnimationFrame(render);
 }
 
 function drawOverlay() {
-    const mmRatio = 0.4; // 現場の比率
+    const mmRatio = 0.4; 
     const forkPx = Math.hypot(points.p2.x - points.p1.x, points.p2.y - points.p1.y);
     const ax = points.p2.x - points.p1.x, ay = points.p2.y - points.p1.y;
     const bx = points.p3.x - points.p1.x, by = points.p3.y - points.p1.y;
@@ -82,22 +79,25 @@ function drawOverlay() {
         total: (totalPx * mmRatio).toFixed(1) 
     };
 
-    // 全ての情報を画面上部（ボタンの下あたり）に一列で配置
-    // 文字サイズを適切に調整 (画面の高さの約1/15)
-    const fSize = canvas.height / 15;
-    const textY = 120; // ボタンの下の余白
+    // --- 文字サイズの調整 (前回の大きすぎた状態から縮小) ---
+    const fSize = canvas.height / 22; // 適正サイズ
+    const textY = 100; // ボタンエリア(44px)の下に十分な余白を確保
 
-    drawStyledText(`No.${String(currentNo).padStart(3, '0')}  尾叉:${res.fork}  全長:${res.total}`, 20, textY, fSize);
-    drawStyledText(isHolding ? "[固定]" : "[追従]", canvas.width - 250, textY, fSize * 0.7);
+    // --- 配置の修正 ---
+    // 左端から No. 尾叉 全長 を一列に並べる
+    drawStyledText(`No.${String(currentNo).padStart(3, '0')}  尾叉:${res.fork}mm  全長:${res.total}mm`, 20, textY, fSize);
+    
+    // 右端に状態表示
+    const statusTxt = isHolding ? "[固定中]" : "[追従中]";
+    drawStyledText(statusTxt, canvas.width - (fSize * 5), textY, fSize * 0.7);
 
-    // 計測点
+    // 計測点（ドラッグ用）
     Object.values(points).forEach(p => {
-        // 描画座標への変換
         const px = (p.x / 1920) * canvas.width;
         const py = (p.y / 1080) * canvas.height;
-        ctx.fillStyle = "black"; ctx.beginPath(); ctx.arc(px, py, 12, 0, Math.PI*2); ctx.fill();
+        ctx.fillStyle = "black"; ctx.beginPath(); ctx.arc(px, py, 10, 0, Math.PI*2); ctx.fill();
         ctx.strokeStyle = "white"; ctx.lineWidth = 2; ctx.stroke();
-        drawStyledText(p.label, px + 15, py - 15, fSize * 0.5);
+        drawStyledText(p.label, px + 15, py - 15, fSize * 0.6);
     });
 }
 
