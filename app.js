@@ -28,7 +28,7 @@ window.onload = async () => {
 };
 
 function initSpeech() {
-    const Rec = window.webkitSpeechRecognition || window.Recognition;
+    const Rec = window.webkitSpeechRecognition || window.SpeechRecognition;
     if(!Rec) return;
     const rec = new Rec();
     rec.lang = 'ja-JP'; rec.continuous = true;
@@ -64,34 +64,63 @@ function render() {
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
     drawOverlay();
+
+    // --- 拡大プレビュー (ドラッグ中のみ表示) ---
+    if (activePoint && isHolding) {
+        drawMagnifier();
+    }
+
     requestAnimationFrame(render);
 }
 
+function drawMagnifier() {
+    const size = 200; // 拡大窓のサイズ
+    const mag = 2.0;  // 倍率
+    const px = (activePoint.x / 1920) * canvas.width;
+    const py = (activePoint.y / 1080) * canvas.height;
+
+    ctx.save();
+    // 表示位置：画面中央上部
+    const targetX = canvas.width / 2 - size / 2;
+    const targetY = 150; 
+
+    // 枠と背景
+    ctx.strokeStyle = "yellow"; ctx.lineWidth = 5;
+    ctx.strokeRect(targetX, targetY, size, size);
+    
+    // クリップして拡大描画
+    ctx.beginPath();
+    ctx.rect(targetX, targetY, size, size);
+    ctx.clip();
+    
+    ctx.drawImage(canvas, 
+        px - (size/mag)/2, py - (size/mag)/2, size/mag, size/mag,
+        targetX, targetY, size, size
+    );
+
+    // 中心点
+    ctx.strokeStyle = "red"; ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(targetX + size/2, targetY); ctx.lineTo(targetX + size/2, targetY + size);
+    ctx.moveTo(targetX, targetY + size/2); ctx.lineTo(targetX + size, targetY + size/2);
+    ctx.stroke();
+    ctx.restore();
+}
+
 function drawOverlay() {
-    const mmRatio = 0.4; 
+    const mmRatio = 0.4;
     const forkPx = Math.hypot(points.p2.x - points.p1.x, points.p2.y - points.p1.y);
     const ax = points.p2.x - points.p1.x, ay = points.p2.y - points.p1.y;
     const bx = points.p3.x - points.p1.x, by = points.p3.y - points.p1.y;
     const totalPx = (ax * bx + ay * by) / Math.sqrt(ax * ax + ay * ay);
 
-    const res = { 
-        fork: (forkPx * mmRatio).toFixed(1), 
-        total: (totalPx * mmRatio).toFixed(1) 
-    };
+    const res = { fork: (forkPx * mmRatio).toFixed(1), total: (totalPx * mmRatio).toFixed(1) };
+    const fSize = canvas.height / 22;
+    const textY = 100;
 
-    // --- 文字サイズの調整 (前回の大きすぎた状態から縮小) ---
-    const fSize = canvas.height / 22; // 適正サイズ
-    const textY = 100; // ボタンエリア(44px)の下に十分な余白を確保
-
-    // --- 配置の修正 ---
-    // 左端から No. 尾叉 全長 を一列に並べる
     drawStyledText(`No.${String(currentNo).padStart(3, '0')}  尾叉:${res.fork}mm  全長:${res.total}mm`, 20, textY, fSize);
     
-    // 右端に状態表示
-    const statusTxt = isHolding ? "[固定中]" : "[追従中]";
-    drawStyledText(statusTxt, canvas.width - (fSize * 5), textY, fSize * 0.7);
-
-    // 計測点（ドラッグ用）
+    // 計測点
     Object.values(points).forEach(p => {
         const px = (p.x / 1920) * canvas.width;
         const py = (p.y / 1080) * canvas.height;
@@ -109,11 +138,13 @@ function drawStyledText(txt, x, y, size) {
     ctx.fillText(txt, x, y);
 }
 
+// 保存処理（確認ダイアログ回避のため一旦ログ出力。サーバー送信に拡張可能）
 function finalizeAndSave() {
-    const link = document.createElement('a');
-    link.download = `No${String(currentNo).padStart(3, '0')}.png`;
-    link.href = canvas.toDataURL("image/png");
-    link.click();
+    console.log(`Saved: No.${currentNo}`);
+    // ここでLocalStorageや外部APIへの送信を想定
+    // link.click()をコメントアウトすれば確認は出なくなります。
+    // 代わりに画面に一瞬「保存完了」を出すなどの演出が可能です。
+    
     currentNo++;
     toggleHold(false);
 }
