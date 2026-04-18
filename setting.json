@@ -1,0 +1,14 @@
+{
+  "system": {
+    "marker_size_mm": 50.0,
+    "target_area_width_mm": 400.0,
+    "target_area_height_mm": 300.0
+  },
+  "labels": {
+    "fish": ["上あご", "尾叉", "尾先端"],
+    "commands": {
+      "hold": ["チェック", "ホールド"],
+      "save": ["パス", "ネクスト"]
+    }
+  }
+}
