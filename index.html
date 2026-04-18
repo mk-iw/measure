@@ -20,11 +20,20 @@
         
         /* 被らないように位置を top: 110px に下げました */
         #ratio-container {
-            position: absolute; top: 110px; left: 50%; transform: translateX(-50%);
-            width: 80%; background: rgba(0,0,0,0.7); padding: 10px; border-radius: 8px;
-            display: none; z-index: 1001; text-align: center; color: #fff;
+            position: fixed;
+            bottom: 20px; /* 最下段 */
+            left: 50%;
+            transform: translateX(-50%);
+            width: 80%;
+            background: rgba(0,0,0,0.7);
+            padding: 15px;
+            border-radius: 10px;
+            display: none;
+            z-index: 100;
         }
-        input[type=range] { width: 100%; }
+        #ratio-container input {
+            width: 100%;
+        }
     </style>
 </head>
 <body>
