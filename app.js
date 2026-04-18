@@ -1,6 +1,6 @@
 let currentNo = 1; let tankId = "1"; let mmRatio = 0.400;
 let isHolding = false; let lastCapturedFrame = null;
-let measurementLogs = [];
+let measurementLogs = []; // 保存処理用には残しますが、描画はしません
 let points = {
     p1: {x: 400, y: 500, label: "口先"},
     p2: {x: 900, y: 500, label: "尾叉"},
@@ -47,7 +47,6 @@ function toggleHold(state) {
         lastCapturedFrame.height = 1080;
         lastCapturedFrame.getContext('2d').drawImage(video, 0, 0, 1920, 1080);
         
-        // メモリ保護のため、わずかに待機してから自動検出を実行
         setTimeout(() => {
             detectFishFast();
         }, 100); 
@@ -59,7 +58,6 @@ function toggleHold(state) {
     document.getElementById('btn-cancel').style.display = isHolding ? 'block' : 'none';
 }
 
-// --- 改善: 自動検出ロジック ---
 function detectFishFast() {
     if (!lastCapturedFrame) return;
     const sw = 480, sh = 270;
@@ -68,7 +66,6 @@ function detectFishFast() {
     const data = octx.getImageData(0, 0, sw, sh).data;
 
     const centerY = (points.p1.y + points.p3.y) / 2 * (sh / 1080);
-    // スキャン感度を調整（現場の白い魚に対応するため閾値を25に緩和）
     const scanLines = [centerY-15, centerY, centerY+15];
     let allMinX = sw, allMaxX = 0, validY = [];
 
@@ -129,25 +126,18 @@ function drawOverlay(ox, oy, scale) {
     const fSize = canvas.height / 25;
     drawStyledText(`水槽${tankId} No.${String(currentNo).padStart(3, '0')} 尾叉:${res.fork}mm 全長:${res.total}mm`, 20, 80, fSize);
 
-    measurementLogs.slice(0, 3).forEach((log, i) => {
-        ctx.globalAlpha = 0.6 - (i * 0.2);
-        drawStyledText(log, canvas.width - (fSize * 8), 80 + (i * fSize * 1.2), fSize * 0.7);
-    });
-    ctx.globalAlpha = 1.0;
+    // 履歴描画(measurementLogsの描画)を削除
 
-    // --- マーカーUIの修正: 塗りつぶしなしの赤丸、小さいラベル ---
     Object.values(points).forEach(p => {
         const px = ox + p.x * scale;
         const py = oy + p.y * scale;
         ctx.strokeStyle = "red"; ctx.lineWidth = 4;
-        ctx.beginPath(); ctx.arc(px, py, 15, 0, Math.PI*2); ctx.stroke();
-        drawStyledText(p.label, px + 15, py - 15, fSize * 0.45); // ラベルを小さく
+        ctx.beginPath(); ctx.arc(px, py, 15, 0, Math.PI*2); ctx.stroke(); // 透過赤丸
+        drawStyledText(p.label, px + 15, py - 15, fSize * 0.45); // 小さいラベル
     });
 }
 
 function finalizeAndSave() {
-    const forkPx = Math.hypot(points.p2.x - points.p1.x, points.p2.y - points.p1.y);
-    measurementLogs.unshift(`No.${currentNo}: ${(forkPx * mmRatio).toFixed(1)}mm`);
     const link = document.createElement('a');
     link.href = canvas.toDataURL("image/png");
     link.download = `水槽${tankId}_No${String(currentNo).padStart(3, '0')}.png`;
