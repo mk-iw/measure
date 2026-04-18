@@ -140,13 +140,32 @@ function drawStyledText(txt, x, y, size) {
 
 // 保存処理（確認ダイアログ回避のため一旦ログ出力。サーバー送信に拡張可能）
 function finalizeAndSave() {
-    console.log(`Saved: No.${currentNo}`);
-    // ここでLocalStorageや外部APIへの送信を想定
-    // link.click()をコメントアウトすれば確認は出なくなります。
-    // 代わりに画面に一瞬「保存完了」を出すなどの演出が可能です。
+    // 1. ファイル名を作成（No.001.pngなど）
+    const fileName = `No${String(currentNo).padStart(3, '0')}.png`;
     
+    // 2. 保存用のリンクを一時的に作って、自動でクリックさせる
+    const link = document.createElement('a');
+    link.href = canvas.toDataURL("image/png");
+    link.download = fileName;
+    
+    // 設定がオフなら、ここをクリックした瞬間に無言で保存されます
+    link.click();
+
+    // 3. 画面に「保存した」ことを知らせる（一瞬だけ）
+    showToast(`${fileName} を保存しました`);
+
     currentNo++;
     toggleHold(false);
+}
+
+// 既にある場合は不要ですが、通知用関数です
+function showToast(msg) {
+    const t = document.createElement('div');
+    t.textContent = msg;
+    t.style.cssText = `position:fixed; top:70px; left:50%; transform:translateX(-50%); 
+        background:rgba(0,0,0,0.6); color:#fff; padding:5px 15px; border-radius:15px; z-index:2000;`;
+    document.body.appendChild(t);
+    setTimeout(() => t.remove(), 1000);
 }
 
 function initTouchEvents() {
