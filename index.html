@@ -3,40 +3,43 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Fish-Measure AR Pro</title>
+    <title>Fish-Measure Pro</title>
     <script src="https://docs.opencv.org/4.x/opencv.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
     <style>
         body { margin: 0; background: #000; color: #fff; font-family: sans-serif; overflow: hidden; touch-action: none; }
-        #container { position: relative; width: 100vw; height: 100vh; }
-        video, canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: contain; }
-        #ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
-        #header { position: absolute; top: 10px; right: 10px; text-align: right; }
-        #no-display { font-size: 28px; font-weight: bold; background: rgba(0,0,0,0.6); padding: 5px 15px; border: 1px solid #fff; }
-        #footer { position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%); width: 80%; text-align: center; }
-        #status { padding: 10px 20px; border-radius: 30px; background: rgba(0,255,0,0.5); font-weight: bold; }
-        .holding { background: rgba(0,120,255,0.8) !important; }
-        #mode-selector { position: absolute; top: 10px; left: 10px; pointer-events: auto; }
-        select { padding: 8px; font-size: 16px; border-radius: 5px; }
+        #container { position: relative; width: 100vw; height: 100vh; display: flex; justify-content: center; align-items: center; }
+        video, canvas { position: absolute; max-width: 100%; max-height: 100%; object-fit: contain; }
+        
+        /* UIレイヤー */
+        #controls { position: absolute; bottom: 20px; right: 20px; display: flex; flex-direction: column; gap: 10px; pointer-events: auto; }
+        button { padding: 15px; font-size: 16px; border-radius: 10px; border: none; background: #eee; color: #000; font-weight: bold; cursor: pointer; }
+        #btn-save { background: #4CAF50; color: white; }
+        #btn-cancel { background: #f44336; color: white; }
+        
+        #info-overlay { position: absolute; top: 10px; right: 10px; pointer-events: none; }
+        #no-display { font-size: 24px; font-weight: bold; color: #000; background: rgba(255,255,255,0.7); padding: 5px 10px; }
+        
+        #rotate-btn { position: absolute; top: 10px; left: 10px; }
+        .portrait { transform: rotate(90deg); transform-origin: center; }
     </style>
 </head>
 <body>
     <div id="container">
         <video id="video" autoplay playsinline></video>
         <canvas id="canvas-measure"></canvas>
-        <div id="ui-layer">
-            <div id="mode-selector">
-                <select id="measure-mode" onchange="changeMode(this.value)">
-                    <option value="fish">魚モード (尾叉長/全長)</option>
-                    <option value="poly">多角形モード (頂点計測)</option>
-                </select>
-            </div>
-            <div id="header">
-                <div id="no-display">No. ---</div>
-            </div>
-            <div id="footer">
-                <span id="status">マーカー待機中...</span>
-            </div>
+        
+        <div id="info-overlay">
+            <div id="no-display">No. ---</div>
+        </div>
+
+        <div id="rotate-btn">
+            <button onclick="toggleRotation()">画面回転</button>
+        </div>
+
+        <div id="controls">
+            <button id="btn-hold" onclick="toggleHold(true)">ホールド (音声:チェック)</button>
+            <button id="btn-cancel" onclick="toggleHold(false)" style="display:none;">キャンセル (戻る)</button>
+            <button id="btn-save" onclick="finalizeAndSave()" style="display:none;">確定・次へ (音声:パス)</button>
         </div>
     </div>
     <script src="app.js"></script>
