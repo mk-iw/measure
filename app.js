@@ -38,7 +38,15 @@ function toggleHold(state) {
         lctx.drawImage(video, 0, 0, 1920, 1080);
         setTimeout(() => { asyncDetect(); }, 150); 
     }
-    const btns = { 'btn-hold': !isHolding, 'btn-ratio': !isHolding, 'btn-save': isHolding, 'btn-cancel': isHolding };
+    
+    // ボタンの表示切り替え（右手操作を優先）
+    const btns = { 
+        'btn-hold': !isHolding,    // 非ホールド時：右側に表示
+        'btn-ratio': !isHolding,   // 非ホールド時：左側に表示（入れ替え）
+        'btn-save': isHolding,     // ホールド時：右側に表示
+        'btn-cancel': isHolding    // ホールド時：左側に表示
+    };
+    
     for (let id in btns) {
         const el = document.getElementById(id);
         if (el) el.style.display = btns[id] ? 'block' : 'none';
@@ -84,11 +92,9 @@ async function asyncDetect() {
         const scale = 1920 / sw;
         const detectedY = (validY.reduce((a,b)=>a+b)/validY.length) * (1080/sh);
         const finalY = Math.max(324, Math.min(756, detectedY));
-
         points.p1.x = allMinX * scale;
-        points.p2.x = allMaxX * scale;
+        points.p2.x = (allMaxX * scale) + 12; // 境界オフセット
         points.p1.y = points.p2.y = finalY;
-
         const fishLen = points.p2.x - points.p1.x;
         points.p3.x = points.p2.x + (fishLen * 0.08); 
         points.p3.y = finalY + (fishLen * 0.1); 
@@ -107,7 +113,6 @@ function render() {
     if (canvas.width !== stageW || canvas.height !== stageH) {
         canvas.width = stageW; canvas.height = stageH;
     }
-
     const scale = Math.min(stageW / 1920, stageH / 1080);
     const ox = (stageW - 1920 * scale) / 2;
     const oy = (stageH - 1080 * scale) / 2;
@@ -132,7 +137,6 @@ function drawOverlay(ox, oy, scale) {
     const forkPx = Math.hypot(points.p2.x - points.p1.x, points.p2.y - points.p1.y);
     const totalPx = Math.hypot(points.p3.x - points.p1.x, points.p3.y - points.p1.y);
     const fSize = canvas.height / 25;
-    
     drawStyledText(`水槽${tankId} No.${String(currentNo).padStart(3, '0')} 尾叉:${(forkPx * mmRatio).toFixed(1)}mm 全長:${(totalPx * mmRatio).toFixed(1)}mm`, 20, 80, fSize);
 
     Object.values(points).forEach(p => {
@@ -147,23 +151,19 @@ function drawMagnifier(ox, oy, scale, sourceImg) {
     const mag = 3;
     const winW = 450, winH = 250;
     const tx = (canvas.width - winW) / 2, ty = 120;
-    
     ctx.save();
     ctx.strokeStyle = "yellow"; ctx.lineWidth = 4;
     ctx.strokeRect(tx, ty, winW, winH);
     ctx.beginPath(); ctx.rect(tx, ty, winW, winH); ctx.clip();
-    
     const srcX = activePoint.x - (winW / mag) / 2 / scale;
     const srcY = activePoint.y - (winH / mag) / 2 / scale;
     ctx.drawImage(sourceImg, srcX, srcY, (winW/mag)/scale, (winH/mag)/scale, tx, ty, winW, winH);
-    
     const fSize = canvas.height / 25;
     const centerX = tx + winW / 2;
     const centerY = ty + winH / 2;
     ctx.strokeStyle = "red"; ctx.lineWidth = 4;
     ctx.beginPath(); ctx.arc(centerX, centerY, 15 * mag * 0.5, 0, Math.PI * 2); ctx.stroke();
     drawStyledText(activePoint.label, centerX + 30, centerY - 30, fSize * 0.6);
-    
     ctx.restore();
 }
 
@@ -186,33 +186,26 @@ function finalizeAndSave() {
 function initTouchEvents() {
     const getPos = (e) => {
         const r = canvas.getBoundingClientRect();
-        const tx = (e.touches[0].clientX - r.left) * (canvas.width / r.width);
-        const ty = (e.touches[0].clientY - r.top) * (canvas.height / r.height);
-        
-        const scale = Math.min(canvas.width / 1920, canvas.height / 1080);
-        const ox = (canvas.width - 1920 * scale) / 2;
-        const oy = (canvas.height - 1080 * scale) / 2;
-        
-        return { x: (tx - ox) / scale, y: (ty - oy) / scale };
+        const stageW = r.width * window.devicePixelRatio;
+        const stageH = r.height * window.devicePixelRatio;
+        const scale = Math.min(stageW / 1920, stageH / 1080);
+        const ox = (stageW - 1920 * scale) / 2;
+        const oy = (stageH - 1080 * scale) / 2;
+        const touchX = (e.touches[0].clientX - r.left) * window.devicePixelRatio;
+        const touchY = (e.touches[0].clientY - r.top) * window.devicePixelRatio;
+        return { x: (touchX - ox) / scale, y: (touchY - oy) / scale };
     };
-
     canvas.addEventListener('touchstart', (e) => {
         if(!isHolding) return;
         const pos = getPos(e);
         activePoint = null;
-        let minDist = 80; // 判定範囲を少し広めに確保
-        
-        // p3(尾先)を判定の優先順位に入れるため、逆順または距離で厳密に評価
-        const pointList = Object.values(points);
-        pointList.forEach(p => {
+        let minDist = 100;
+        for (const key in points) {
+            const p = points[key];
             const d = Math.hypot(p.x - pos.x, p.y - pos.y);
-            if (d < minDist) {
-                minDist = d;
-                activePoint = p;
-            }
-        });
+            if (d < minDist) { minDist = d; activePoint = p; }
+        }
     });
-
     canvas.addEventListener('touchmove', (e) => {
         if(activePoint) {
             const pos = getPos(e);

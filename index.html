@@ -37,12 +37,13 @@
     </style>
 </head>
 <body>
-    <div id="ui-header">
-        <button id="btn-hold" onclick="toggleHold(true)">ホールド</button>
-        <button id="btn-ratio" onclick="toggleRatioUI()">倍率調整</button>
-        <button id="btn-cancel" onclick="toggleHold(false)" style="display:none; background:#e74c3c; color:#fff;">戻る</button>
-        <button id="btn-save" onclick="finalizeAndSave()">確定・保存</button>
-    </div>
+<div class="controls">
+    <button id="btn-ratio" onclick="toggleRatioUI()">倍率調整</button>
+    <button id="btn-cancel" onclick="toggleHold(false)" style="display:none;">キャンセル</button>
+    
+    <button id="btn-hold" onclick="toggleHold(true)">ホールド</button>
+    <button id="btn-save" onclick="finalizeAndSave()" style="display:none;">保存</button>
+</div>
 
     <div id="ratio-container">
         <div>倍率校正 (mm/px): <span id="ratio-val">0.400</span></div>
