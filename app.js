@@ -1,186 +1,186 @@
 /**
- * Fish-Measure AR Pro: app.js
- * 機能: 音声操作, No.自動更新, 射影変換, 魚類計測, 画像保存
+ * Fish-Measure AR Pro: app.js (全機能統合版)
  */
 
 let currentNo = 1;
 let isHolding = false;
 let config = {};
-let markers = []; // ArUcoマーカー座標用
-let points = { p1: {x:200, y:200}, p2: {x:400, y:300}, p3: {x:500, y:200} }; // 初期表示点
-let mmPerPx = 1.0; // 1ピクセルあたりの長さ(mm)
+let points = { p1: {x:200, y:200}, p2: {x:400, y:300}, p3: {x:500, y:200} };
+let draggedPoint = null;
 
 const video = document.getElementById('video');
 const canvas = document.getElementById('canvas-measure');
 const ctx = canvas.getContext('2d');
 const statusEl = document.getElementById('status');
 
-// --- 1. 初期化と設定の読み込み ---
+// --- 1. 初期化 ---
 window.onload = async () => {
     try {
         const response = await fetch('settings.json');
         config = await response.json();
     } catch (e) {
-        // フォールバック設定
         config = {
-            system: { target_area_width_mm: 400.0, marker_size_mm: 50.0 },
+            system: { target_area_width_mm: 400.0 },
             labels: { commands: { hold: ["チェック", "ホールド"], save: ["パス", "ネクスト"] } }
         };
     }
 
     const inputNo = prompt("開始No.を入力(3桁)", "001");
     currentNo = parseInt(inputNo) || 1;
-    updateNoDisplay();
+    updateUI();
 
     await startCamera();
     initSpeech();
+    initManualButtons();
+    initDragEvents();
     requestAnimationFrame(mainLoop);
 };
 
-// カメラ起動（背面・フルHD推奨）
 async function startCamera() {
     const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment", width: 1920, height: 1080 }
+        video: { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1080 } }
     });
     video.srcObject = stream;
 }
 
-function updateNoDisplay() {
+function updateUI() {
     document.getElementById('no-display').innerText = `No. ${String(currentNo).padStart(3, '0')}`;
 }
 
-// --- 2. 音声認識 (Web Speech API) ---
+// --- 2. 音声 & 手動ボタン ---
 function initSpeech() {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const SpeechRecognition = window.webkitSpeechRecognition || window.SpeechRecognition;
+    if (!SpeechRecognition) return;
     const recognition = new SpeechRecognition();
     recognition.lang = 'ja-JP';
     recognition.continuous = true;
-
     recognition.onresult = (event) => {
         const cmd = event.results[event.results.length - 1][0].transcript.trim();
-        console.log("Voice Command:", cmd);
-
-        if (config.labels.commands.hold.some(word => cmd.includes(word))) {
-            toggleHold(true);
-        } else if (config.labels.commands.save.some(word => cmd.includes(word))) {
-            if (isHolding) finalizeAndSave();
-        }
+        if (config.labels.commands.hold.some(w => cmd.includes(w))) toggleHold(true);
+        if (config.labels.commands.save.some(w => cmd.includes(w))) { if(isHolding) finalizeAndSave(); }
     };
     recognition.start();
 }
 
+function initManualButtons() {
+    // ボタンの動的生成
+    const btnContainer = document.createElement('div');
+    btnContainer.style = "position:absolute; bottom:100px; right:20px; display:flex; flex-direction:column; gap:10px; pointer-events:auto;";
+    
+    const btnHold = createBtn("固定/解除", "#0078ff", () => toggleHold(!isHolding));
+    const btnSave = createBtn("保存/次へ", "#ff4b00", () => { if(isHolding) finalizeAndSave(); });
+    const btnRotate = createBtn("画面回転", "#333", rotateCanvas);
+
+    btnContainer.appendChild(btnRotate);
+    btnContainer.appendChild(btnHold);
+    btnContainer.appendChild(btnSave);
+    document.getElementById('container').appendChild(btnContainer);
+}
+
+function createBtn(text, color, onClick) {
+    const b = document.createElement('button');
+    b.innerText = text;
+    b.style = `padding:15px; background:${color}; color:white; border:none; border-radius:10px; font-weight:bold; font-size:16px;`;
+    b.onclick = onClick;
+    return b;
+}
+
+let rotation = 0;
+function rotateCanvas() {
+    rotation = (rotation + 90) % 360;
+    canvas.style.transform = `rotate(${rotation}deg)`;
+}
+
 function toggleHold(state) {
     isHolding = state;
-    statusEl.innerText = state ? "【固定】位置調整 & ネクスト" : "【追従中】ホールド/チェック";
+    statusEl.innerText = state ? "【固定中】ドラッグ調整 & 保存" : "【追従中】ホールド待ち";
     statusEl.className = state ? "holding" : "";
 }
 
-// --- 3. 幾何計算コア ---
-function calculateResults() {
-    const { p1, p2, p3 } = points;
-    
-    // 尾叉長 (P1-P2間)
-    const forkLenPx = Math.hypot(p2.x - p1.x, p2.y - p1.y);
-    
-    // 全長 (P1-P2延長線へのP3投影)
-    const ax = p2.x - p1.x, ay = p2.y - p1.y;
-    const bx = p3.x - p1.x, by = p3.y - p1.y;
-    const dot = ax * bx + ay * by;
-    const magASq = ax * ax + ay * ay;
-    const totalLenPx = dot / Math.sqrt(magASq);
-
-    // 単位変換 (ピクセル -> mm)
-    // 本来はArUcoの距離から動的にmmPerPxを算出するが、ここでは簡易的に固定比率でデモ
-    const mmRatio = config.system.target_area_width_mm / 1000; // 仮の画面幅1000px想定
-    
-    return {
-        forkLen: (forkLenPx * mmRatio).toFixed(1),
-        totalLen: (totalLenPx * mmRatio).toFixed(1)
+// --- 3. ドラッグ操作 ---
+function initDragEvents() {
+    const getPos = (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const t = e.touches ? e.touches[0] : e;
+        return {
+            x: (t.clientX - rect.left) * (canvas.width / rect.width),
+            y: (t.clientY - rect.top) * (canvas.height / rect.height)
+        };
     };
+
+    canvas.addEventListener('touchstart', (e) => {
+        if (!isHolding) return;
+        const pos = getPos(e);
+        const hitRadius = 50;
+        for (let key in points) {
+            if (Math.hypot(pos.x - points[key].x, pos.y - points[key].y) < hitRadius) {
+                draggedPoint = key;
+                break;
+            }
+        }
+    });
+
+    canvas.addEventListener('touchmove', (e) => {
+        if (draggedPoint) {
+            const pos = getPos(e);
+            points[draggedPoint] = pos;
+            e.preventDefault();
+        }
+    }, { passive: false });
+
+    canvas.addEventListener('touchend', () => { draggedPoint = null; });
 }
 
-// --- 4. 描画とメインループ ---
+// --- 4. 描画 & 保存 ---
 function mainLoop() {
     if (video.readyState === video.HAVE_ENOUGH_DATA) {
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
-        ctx.drawImage(video, 0, 0);
-
-        // マーカー検出（OpenCV.js）
-        if (!isHolding && typeof cv !== 'undefined' && cv.Mat) {
-            detectMarkersAndPoints();
-        }
-
+        
+        // 1. カメラ映像を背景に描く
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        
+        // 2. 計測ラインとポイントを描画
         drawOverlay();
     }
     requestAnimationFrame(mainLoop);
 }
 
-// ArUcoマーカー検出と座標補正（ロジック概略）
-function detectMarkersAndPoints() {
-    // ここに OpenCV の検出コードを記述
-    // cv.detectMarkers(src, dictionary, corners, ids);
-    // 4隅が揃えば射影変換行列を作成し、pointsを自動更新する
-}
-
 function drawOverlay() {
-    const res = calculateResults();
+    const { p1, p2, p3 } = points;
+    const forkLen = (Math.hypot(p2.x - p1.x, p2.y - p1.y) * (config.system.target_area_width_mm / 1000)).toFixed(1);
+
+    // ライン
+    ctx.strokeStyle = "yellow"; ctx.lineWidth = 8;
+    ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
     
-    // 計測ラインとポイント
-    ctx.strokeStyle = "#ffff00"; ctx.lineWidth = 5;
-    ctx.beginPath(); ctx.moveTo(points.p1.x, points.p1.y); ctx.lineTo(points.p2.x, points.p2.y); ctx.stroke();
-    
-    ctx.fillStyle = "#00ffff";
-    [points.p1, points.p2, points.p3].forEach((p, i) => {
-        ctx.beginPath(); ctx.arc(p.x, p.y, 15, 0, Math.PI*2); ctx.fill();
-        ctx.fillStyle = "white"; ctx.font = "30px sans-serif";
-        ctx.fillText(["口先","尾叉","尾先"][i], p.x + 20, p.y - 20);
-        ctx.fillStyle = "#00ffff";
+    // ポイント
+    ctx.fillStyle = "cyan";
+    [p1, p2, p3].forEach(p => {
+        ctx.beginPath(); ctx.arc(p.x, p.y, 20, 0, Math.PI*2); ctx.fill();
     });
 
-    // 結果表示
-    ctx.fillStyle = "rgba(0,0,0,0.7)";
-    ctx.fillRect(20, canvas.height - 180, 400, 150);
-    ctx.fillStyle = "#00ff00";
-    ctx.font = "bold 50px sans-serif";
-    ctx.fillText(`尾叉長: ${res.forkLen} mm`, 40, canvas.height - 120);
-    ctx.fillText(`全　長: ${res.totalLen} mm`, 40, canvas.height - 50);
+    // テキスト
+    ctx.fillStyle = "rgba(0,0,0,0.5)";
+    ctx.fillRect(30, canvas.height - 120, 350, 100);
+    ctx.fillStyle = "#0f0"; ctx.font = "bold 50px sans-serif";
+    ctx.fillText(`尾叉長: ${forkLen}mm`, 50, canvas.height - 50);
 }
 
-// --- 5. 保存とNo.更新 ---
 function finalizeAndSave() {
-    // 右上にNo.刻印
+    // 保存直前にNo.を合成
     ctx.fillStyle = "white";
-    ctx.font = "bold 50px sans-serif";
-    ctx.fillText(`No. ${String(currentNo).padStart(3, '0')}`, canvas.width - 250, 80);
+    ctx.font = "bold 60px sans-serif";
+    ctx.shadowColor = "black"; ctx.shadowBlur = 10;
+    ctx.fillText(`No. ${String(currentNo).padStart(3, '0')}`, canvas.width - 300, 100);
 
-    // 画像を保存（ダウンロード）
     const dataURL = canvas.toDataURL("image/png");
     const link = document.createElement('a');
-    link.download = `Measure_${String(currentNo).padStart(3, '0')}.png`;
+    link.download = `FISH_${String(currentNo).padStart(3, '0')}.png`;
     link.href = dataURL;
     link.click();
 
-    // カウントアップとリセット
     currentNo++;
-    updateNoDisplay();
+    updateUI();
     toggleHold(false);
 }
-
-// --- 6. タッチによる微調整機能 ---
-canvas.addEventListener('touchstart', (e) => {
-    if (!isHolding) return;
-    const rect = canvas.getBoundingClientRect();
-    const touch = e.touches[0];
-    const tx = (touch.clientX - rect.left) * (canvas.width / rect.width);
-    const ty = (touch.clientY - rect.top) * (canvas.height / rect.height);
-
-    // 最も近いポイントを選択して移動
-    let closest = points.p1;
-    let minDist = Math.hypot(tx - points.p1.x, ty - points.p1.y);
-    [points.p2, points.p3].forEach(p => {
-        let d = Math.hypot(tx - p.x, ty - p.y);
-        if (d < minDist) { minDist = d; closest = p; }
-    });
-    closest.x = tx; closest.y = ty;
-});
