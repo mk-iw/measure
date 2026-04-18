@@ -2,9 +2,9 @@ let currentNo = 1;
 let isHolding = false;
 let lastCapturedFrame = null;
 let points = {
-    p1: {x: 300, y: 200, label: "口先"},
-    p2: {x: 700, y: 300, label: "尾叉"},
-    p3: {x: 900, y: 200, label: "尾先"}
+    p1: {x: 400, y: 400, label: "口先"},
+    p2: {x: 800, y: 500, label: "尾叉"},
+    p3: {x: 1000, y: 400, label: "尾先"}
 };
 let activePoint = null;
 
@@ -31,9 +31,9 @@ async function startCamera() {
 
 function initSpeech() {
     const Speech = window.webkitSpeechRecognition || window.SpeechRecognition;
+    if(!Speech) return;
     const rec = new Speech();
-    rec.lang = 'ja-JP';
-    rec.continuous = true;
+    rec.lang = 'ja-JP'; rec.continuous = true;
     rec.onresult = (e) => {
         const cmd = e.results[e.results.length - 1][0].transcript;
         if(cmd.match(/チェック|ホールド/)) toggleHold(true);
@@ -47,37 +47,30 @@ function toggleHold(state) {
     isHolding = state;
     if (state) {
         lastCapturedFrame = document.createElement('canvas');
-        lastCapturedFrame.width = 1920; 
-        lastCapturedFrame.height = 1080;
+        lastCapturedFrame.width = 1920; lastCapturedFrame.height = 1080;
         lastCapturedFrame.getContext('2d').drawImage(video, 0, 0);
     } else {
         lastCapturedFrame = null;
     }
+    document.getElementById('btn-hold').style.display = isHolding ? 'none' : 'block';
+    document.getElementById('btn-save').style.display = isHolding ? 'block' : 'none';
+    document.getElementById('btn-cancel').style.display = isHolding ? 'block' : 'none';
 }
 
 function render() {
-    // 常に画面いっぱいに描画
     canvas.width = window.innerWidth * window.devicePixelRatio;
     canvas.height = window.innerHeight * window.devicePixelRatio;
-    const cw = canvas.width;
-    const ch = canvas.height;
+    const cw = canvas.width; const ch = canvas.height;
 
     ctx.save();
-    // 画面中央を軸に90度回転させて「横長」に見せる
     ctx.translate(cw / 2, ch / 2);
-    ctx.rotate(Math.PI / 2);
+    ctx.rotate(Math.PI / 2); // 90度回転
     
-    // 回転後の座標系での描画幅（スマホの縦が横になる）
-    const drawW = ch; 
-    const drawH = cw;
-
-    // 背景描画
+    const drawW = ch; const drawH = cw;
     const img = (isHolding && lastCapturedFrame) ? lastCapturedFrame : video;
     ctx.drawImage(img, -drawW/2, -drawH/2, drawW, drawH);
 
-    // 数値計算と描画（この中では横長1920x1080の座標系で考える）
     drawOverlay(drawW, drawH);
-
     ctx.restore();
     requestAnimationFrame(render);
 }
@@ -87,30 +80,25 @@ function drawOverlay(w, h) {
     const ax = points.p2.x - points.p1.x, ay = points.p2.y - points.p1.y;
     const bx = points.p3.x - points.p1.x, by = points.p3.y - points.p1.y;
     const totalPx = (ax * bx + ay * by) / Math.sqrt(ax * ax + ay * ay);
-    const mmRatio = 0.4; // settingsから取得する実倍率
+    const res = { fork: (forkPx * 0.4).toFixed(1), total: (totalPx * 0.4).toFixed(1) };
 
-    const res = { fork: (forkPx * mmRatio).toFixed(1), total: (totalPx * mmRatio).toFixed(1) };
+    const topY = -h / 2 + 70; // ボタン（高さ約50-60）のすぐ下に配置
+    const fSize = h / 28;
 
-    // 全体の文字サイズ調整
-    const baseS = h / 20;
+    // 全ての情報を「上側」の細い帯状に配置
+    // 左：状態, 中央：計測値, 右：No
+    drawStyledText(isHolding ? "【固定】" : "【追従】", -w/2 + 20, topY, fSize * 0.7);
+    drawStyledText(`尾叉:${res.fork}mm`, -w/2 + 180, topY, fSize);
+    drawStyledText(`全長:${res.total}mm`, -w/2 + 450, topY, fSize);
+    drawStyledText(`No.${String(currentNo).padStart(3, '0')}`, w/2 - 180, topY, fSize);
 
-    // 1. 状態 (左上端)
-    drawStyledText(isHolding ? "【固定】パス/ネクストで保存" : "【追従】チェック/ホールド", -w/2 + 20, -h/2 + 50, baseS * 0.8);
-    
-    // 2. 計測値 (左下端)
-    drawStyledText(`尾叉長: ${res.fork}mm`, -w/2 + 30, h/2 - 100, baseS * 1.5);
-    drawStyledText(`全　長: ${res.total}mm`, -w/2 + 30, h/2 - 30, baseS * 1.5);
-
-    // 3. No表示 (右上端)
-    drawStyledText(`No. ${String(currentNo).padStart(3, '0')}`, w/2 - 200, -h/2 + 60, baseS * 1.2);
-
-    // 4. ポイント
+    // ポイント描画（ドラッグ操作対象）
     Object.values(points).forEach(p => {
-        const px = p.x / 1920 * w - w/2;
-        const py = p.y / 1080 * h - h/2;
-        ctx.fillStyle = "black"; ctx.beginPath(); ctx.arc(px, py, 15, 0, Math.PI*2); ctx.fill();
+        const px = (p.x / 1920) * w - w/2;
+        const py = (p.y / 1080) * h - h/2;
+        ctx.fillStyle = "black"; ctx.beginPath(); ctx.arc(px, py, 12, 0, Math.PI*2); ctx.fill();
         ctx.strokeStyle = "white"; ctx.lineWidth = 2; ctx.stroke();
-        drawStyledText(p.label, px + 20, py - 20, baseS * 0.6);
+        drawStyledText(p.label, px + 20, py - 20, fSize * 0.5);
     });
 }
 
@@ -128,27 +116,25 @@ function finalizeAndSave() {
     link.download = `${dateStr}_No${String(currentNo).padStart(3, '0')}.png`;
     link.href = canvas.toDataURL("image/png");
     link.click();
-
     currentNo++;
     toggleHold(false);
 }
 
 function initTouchEvents() {
+    const getPos = (e) => {
+        const r = canvas.getBoundingClientRect();
+        const t = e.touches[0];
+        return { x: (t.clientY - r.top) * (1920 / r.height), y: (r.right - t.clientX) * (1080 / r.width) };
+    };
     canvas.addEventListener('touchstart', (e) => {
         if(!isHolding) return;
-        const rect = canvas.getBoundingClientRect();
-        const t = e.touches[0];
-        // 回転を考慮した座標変換
-        const tx = (t.clientY - rect.top) * (1920 / rect.height);
-        const ty = (rect.right - t.clientX) * (1080 / rect.width);
-        activePoint = Object.values(points).find(p => Math.hypot(p.x - tx, p.y - ty) < 100);
+        const pos = getPos(e);
+        activePoint = Object.values(points).find(p => Math.hypot(p.x - pos.x, p.y - pos.y) < 120);
     });
     canvas.addEventListener('touchmove', (e) => {
         if(activePoint) {
-            const rect = canvas.getBoundingClientRect();
-            const t = e.touches[0];
-            activePoint.x = (t.clientY - rect.top) * (1920 / rect.height);
-            activePoint.y = (rect.right - t.clientX) * (1080 / rect.width);
+            const pos = getPos(e);
+            activePoint.x = pos.x; activePoint.y = pos.y;
             e.preventDefault();
         }
     }, {passive: false});
