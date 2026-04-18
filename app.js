@@ -8,10 +8,11 @@ const lctx = lastCapturedFrame.getContext('2d', { alpha: false });
 const offscreen = document.createElement('canvas');
 const octx = offscreen.getContext('2d', { willReadFrequently: true });
 
+// 初期位置を中央付近に設定
 let points = {
-    p1: {x: 400, y: 500, label: "口先"},
-    p2: {x: 900, y: 500, label: "尾叉"},
-    p3: {x: 1200, y: 500, label: "尾先"}
+    p1: {x: 400, y: 540, label: "口先"},
+    p2: {x: 900, y: 540, label: "尾叉"},
+    p3: {x: 1200, y: 640, label: "尾先"}
 };
 
 const video = document.getElementById('video');
@@ -52,13 +53,18 @@ async function asyncDetect() {
     const imgData = await new Promise(r => setTimeout(() => r(octx.getImageData(0, 0, sw, sh)), 0));
     const data = imgData.data;
 
-    const centerY = (points.p1.y + points.p3.y) / 2 * (sh / 1080);
-    const scanLines = [centerY-10, centerY, centerY+10];
+    // 【修正】ベースY座標を画面中央(1080の半分=540)に固定。±20%の範囲で制限。
+    let baseY = (points.p1.y + points.p2.y) / 2;
+    if (Math.abs(baseY - 540) > 216) { baseY = 540; } // 216px = 1080pxの20%
+
+    const scanY = baseY * (sh / 1080);
+    const scanLines = [scanY - 10, scanY, scanY + 10];
     let allMinX = sw, allMaxX = 0, validY = [];
 
     scanLines.forEach(y => {
         let lineMinX = sw, lineMaxX = 0;
         const row = Math.floor(y);
+        if (row < 0 || row >= sh) return;
         for (let x = 15; x < sw - 15; x += 1) {
             const i = (row * sw + x) * 4;
             const prevI = (row * sw + (x - 5)) * 4;
@@ -78,17 +84,18 @@ async function asyncDetect() {
 
     if (validY.length > 0) {
         const scale = 1920 / sw;
-        const avgY = (validY.reduce((a,b)=>a+b)/validY.length) * (1080/sh);
+        const detectedY = (validY.reduce((a,b)=>a+b)/validY.length) * (1080/sh);
         
-        // ロジック変更: 検出された右端を「尾叉(p2)」に、左端を「口先(p1)」に配置
+        // 検出結果が中央±20%を超えないようガード
+        const finalY = Math.max(324, Math.min(756, detectedY));
+
         points.p1.x = allMinX * scale;
         points.p2.x = allMaxX * scale;
-        points.p1.y = points.p2.y = avgY;
+        points.p1.y = points.p2.y = finalY;
 
-        // 尾先(p3)は体長（p2-p1）の約1.1倍の位置に自動配置、かつY軸を10%ずらす
         const fishLen = points.p2.x - points.p1.x;
         points.p3.x = points.p2.x + (fishLen * 0.08); 
-        points.p3.y = avgY + (fishLen * 0.1); 
+        points.p3.y = finalY + (fishLen * 0.1); 
     }
     offscreen.width = 1;
 }
@@ -115,11 +122,11 @@ function render() {
     const imgSource = (isHolding) ? lastCapturedFrame : video;
     ctx.drawImage(imgSource, ox, oy, 1920 * scale, 1080 * scale);
 
-    // 【追加】スキャンガイド（帯）の表示
+    // 【修正】スキャンガイドを「緑の帯」にし、中央付近に固定表示
     if (!isHolding) {
-        ctx.fillStyle = "rgba(255, 255, 255, 0.15)";
-        const guideY = oy + (points.p1.y * scale) - (20 * scale);
-        ctx.fillRect(ox, guideY, 1920 * scale, 40 * scale);
+        ctx.fillStyle = "rgba(0, 255, 0, 0.15)"; // 緑の透過
+        const guideY = oy + (points.p1.y * scale) - (30 * scale);
+        ctx.fillRect(ox, guideY, 1920 * scale, 60 * scale);
     }
 
     drawOverlay(ox, oy, scale);
@@ -143,7 +150,7 @@ function drawOverlay(ox, oy, scale) {
 
 function drawMagnifier(ox, oy, scale, sourceImg) {
     const mag = 3;
-    const winW = 450, winH = 250; // 横に伸ばした窓
+    const winW = 450, winH = 250;
     const tx = (canvas.width - winW) / 2, ty = 120;
     
     ctx.save();
@@ -151,12 +158,10 @@ function drawMagnifier(ox, oy, scale, sourceImg) {
     ctx.strokeRect(tx, ty, winW, winH);
     ctx.beginPath(); ctx.rect(tx, ty, winW, winH); ctx.clip();
     
-    // 拡大表示
     const srcX = activePoint.x - (winW / mag) / 2 / scale;
     const srcY = activePoint.y - (winH / mag) / 2 / scale;
     ctx.drawImage(sourceImg, srcX, srcY, (winW/mag)/scale, (winH/mag)/scale, tx, ty, winW, winH);
     
-    // 拡大窓内にも赤丸とラベルを表示
     const fSize = canvas.height / 25;
     const centerX = tx + winW / 2;
     const centerY = ty + winH / 2;
@@ -196,15 +201,11 @@ function initTouchEvents() {
     canvas.addEventListener('touchstart', (e) => {
         if(!isHolding) return;
         const pos = getPos(e);
-        // 判定ロジック修正：赤丸の中心(p.x, p.y)からの距離で純粋に判定
         activePoint = null;
-        let minDist = 60; // タッチ判定の有効半径（ピクセル）
+        let minDist = 70; 
         Object.values(points).forEach(p => {
             const d = Math.hypot(p.x - pos.x, p.y - pos.y);
-            if (d < minDist) {
-                minDist = d;
-                activePoint = p;
-            }
+            if (d < minDist) { minDist = d; activePoint = p; }
         });
     });
     canvas.addEventListener('touchmove', (e) => {
