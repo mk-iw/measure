@@ -8,7 +8,6 @@ const lctx = lastCapturedFrame.getContext('2d', { alpha: false });
 const offscreen = document.createElement('canvas');
 const octx = offscreen.getContext('2d', { willReadFrequently: true });
 
-// 初期位置は中央。スキャンガイドもここを基準にする
 let points = {
     p1: {x: 400, y: 540, label: "口先"},
     p2: {x: 900, y: 540, label: "尾叉"},
@@ -29,48 +28,71 @@ window.onload = async () => {
         video.srcObject = s;
         video.play();
         renderLoop();
-    } catch (e) { alert("カメラエラー"); }
+    } catch (e) { alert("カメラエラー: " + e.message); }
     initTouchEvents();
 };
 
 function toggleHold(state) {
     isHolding = state;
     if (state) {
+        // iPhone向けに確実に描画を完了させてから検出へ渡す
         lctx.drawImage(video, 0, 0, 1920, 1080);
-        setTimeout(() => { asyncDetect(); }, 150); 
+        requestAnimationFrame(() => {
+            setTimeout(() => { asyncDetect(); }, 100);
+        });
     }
-    document.getElementById('btn-ratio').style.display = !isHolding ? 'block' : 'none';
-    document.getElementById('btn-hold').style.display = !isHolding ? 'block' : 'none';
-    document.getElementById('btn-cancel').style.display = isHolding ? 'block' : 'none';
-    document.getElementById('btn-save').style.display = isHolding ? 'block' : 'none';
+    
+    // ボタンの表示/非表示を確実に実行
+    const updateBtn = (id, show) => {
+        const el = document.getElementById(id);
+        if (el) el.style.setProperty('display', show ? 'block' : 'none', 'important');
+    };
+    
+    updateBtn('btn-ratio', !isHolding);
+    updateBtn('btn-hold', !isHolding);
+    updateBtn('btn-cancel', isHolding);
+    updateBtn('btn-save', isHolding);
+}
+
+// 倍率調整ボタンの反応を保証する関数
+function toggleRatioUI() {
+    const val = prompt("1pxあたりのmm数を入力してください", mmRatio);
+    if (val !== null && !isNaN(val)) {
+        mmRatio = parseFloat(val);
+        alert(`倍率を ${mmRatio} に設定しました。`);
+    }
 }
 
 async function asyncDetect() {
     const sw = 480, sh = 270;
     offscreen.width = sw; offscreen.height = sh;
     octx.drawImage(lastCapturedFrame, 0, 0, sw, sh);
-    const imgData = await new Promise(r => setTimeout(() => r(octx.getImageData(0, 0, sw, sh)), 0));
+    
+    const imgData = octx.getImageData(0, 0, sw, sh);
     const data = imgData.data;
 
     const scanY = 540 * (sh / 1080); 
-    const scanLines = [scanY - 10, scanY, scanY + 10];
+    const scanLines = [scanY - 12, scanY, scanY + 12];
     let allMinX = sw, allMaxX = 0, validY = [];
 
     scanLines.forEach(y => {
         let lineMinX = sw, lineMaxX = 0;
         const row = Math.floor(y);
         if (row < 0 || row >= sh) return;
-        for (let x = 15; x < sw - 15; x += 1) {
+        
+        // 検出感度をiPhone向けに微調整（差分20以上に緩和）
+        for (let x = 10; x < sw - 10; x += 1) {
             const i = (row * sw + x) * 4;
-            const prevI = (row * sw + (x - 5)) * 4;
+            const prevI = (row * sw + (x - 4)) * 4;
             const gray = data[i] * 0.3 + data[i+1] * 0.59 + data[i+2] * 0.11;
             const prevGray = data[prevI] * 0.3 + data[prevI+1] * 0.59 + data[prevI+2] * 0.11;
-            if (Math.abs(gray - prevGray) > 25) {
+            
+            if (Math.abs(gray - prevGray) > 20) {
                 if (x < lineMinX) lineMinX = x;
                 if (x > lineMaxX) lineMaxX = x;
             }
         }
-        if (lineMaxX - lineMinX > 60) {
+        if (lineMaxX - lineMinX > 50) {
             if (lineMinX < allMinX) allMinX = lineMinX;
             if (lineMaxX > allMaxX) allMaxX = lineMaxX;
             validY.push(y);
@@ -79,18 +101,15 @@ async function asyncDetect() {
 
     if (validY.length > 0) {
         const scale = 1920 / sw;
-        const finalY = 540; 
-
         points.p1.x = allMinX * scale;
-        // 【修正】余計なオフセットを完全に削除。検出した右端(allMaxX)をそのまま中心に。
-        points.p2.x = allMaxX * scale; 
-        points.p1.y = points.p2.y = finalY;
+        points.p2.x = allMaxX * scale;
+        points.p1.y = points.p2.y = 540;
 
         const fishLen = points.p2.x - points.p1.x;
-        points.p3.x = points.p2.x + (fishLen * 0.1); // 尾叉から約10%の位置に尾先を初期配置
-        points.p3.y = finalY + (fishLen * 0.1); 
+        // 【修正】尾先の位置を5%（0.05倍）に変更
+        points.p3.x = points.p2.x + (fishLen * 0.05); 
+        points.p3.y = 540 + (fishLen * 0.08); 
     }
-    offscreen.width = 1;
 }
 
 function renderLoop() {
@@ -115,7 +134,7 @@ function render() {
     ctx.drawImage(imgSource, ox, oy, 1920 * scale, 1080 * scale);
 
     if (!isHolding) {
-        ctx.fillStyle = "rgba(0, 255, 0, 0.15)";
+        ctx.fillStyle = "rgba(0, 255, 0, 0.2)";
         const guideY = oy + (540 * scale) - (30 * scale);
         ctx.fillRect(ox, guideY, 1920 * scale, 60 * scale);
     }
@@ -149,12 +168,10 @@ function drawMagnifier(ox, oy, scale, sourceImg) {
     const srcX = activePoint.x - (winW / mag) / 2 / scale;
     const srcY = activePoint.y - (winH / mag) / 2 / scale;
     ctx.drawImage(sourceImg, srcX, srcY, (winW/mag)/scale, (winH/mag)/scale, tx, ty, winW, winH);
-    const fSize = canvas.height / 25;
     const centerX = tx + winW / 2;
     const centerY = ty + winH / 2;
     ctx.strokeStyle = "red"; ctx.lineWidth = 4;
-    ctx.beginPath(); ctx.arc(centerX, centerY, 15 * mag * 0.5, 0, Math.PI * 2); ctx.stroke();
-    drawStyledText(activePoint.label, centerX + 30, centerY - 30, fSize * 0.6);
+    ctx.beginPath(); ctx.arc(centerX, centerY, 20, 0, Math.PI * 2); ctx.stroke();
     ctx.restore();
 }
 
@@ -169,7 +186,6 @@ function finalizeAndSave() {
     link.href = canvas.toDataURL("image/png");
     link.download = `水槽${tankId}_No${String(currentNo).padStart(3, '0')}.png`;
     link.click();
-    link.href = "";
     currentNo++;
     toggleHold(false);
 }
@@ -177,24 +193,28 @@ function finalizeAndSave() {
 function initTouchEvents() {
     const getPos = (e) => {
         const r = canvas.getBoundingClientRect();
-        const touchX = (e.touches[0].clientX - r.left) * (canvas.width / r.width);
-        const touchY = (e.touches[0].clientY - r.top) * (canvas.height / r.height);
-        const scale = Math.min(canvas.width / 1920, canvas.height / 1080);
-        const ox = (canvas.width - 1920 * scale) / 2;
-        const oy = (canvas.height - 1080 * scale) / 2;
+        const stageW = canvas.width;
+        const stageH = canvas.height;
+        const scale = Math.min(stageW / 1920, stageH / 1080);
+        const ox = (stageW - 1920 * scale) / 2;
+        const oy = (stageH - 1080 * scale) / 2;
+        // iOS Safari用の座標取得
+        const t = e.touches[0];
+        const touchX = (t.clientX - r.left) * (canvas.width / r.width);
+        const touchY = (t.clientY - r.top) * (canvas.height / r.height);
         return { x: (touchX - ox) / scale, y: (touchY - oy) / scale };
     };
     canvas.addEventListener('touchstart', (e) => {
         if(!isHolding) return;
         const pos = getPos(e);
         activePoint = null;
-        let minDist = 100;
+        let minDist = 120; // 掴みやすさをiPhone向けに調整
         for (const key in points) {
             const p = points[key];
             const d = Math.hypot(p.x - pos.x, p.y - pos.y);
             if (d < minDist) { minDist = d; activePoint = p; }
         }
-    });
+    }, {passive: false});
     canvas.addEventListener('touchmove', (e) => {
         if(activePoint) {
             const pos = getPos(e);
