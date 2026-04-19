@@ -8,6 +8,7 @@ const lctx = lastCapturedFrame.getContext('2d', { alpha: false });
 const offscreen = document.createElement('canvas');
 const octx = offscreen.getContext('2d', { willReadFrequently: true });
 
+// 初期位置は中央。スキャンガイドもここを基準にする
 let points = {
     p1: {x: 400, y: 540, label: "口先"},
     p2: {x: 900, y: 540, label: "尾叉"},
@@ -38,19 +39,10 @@ function toggleHold(state) {
         lctx.drawImage(video, 0, 0, 1920, 1080);
         setTimeout(() => { asyncDetect(); }, 150); 
     }
-    
-    // ボタンの表示切り替え（右手操作を優先）
-    const btns = { 
-        'btn-hold': !isHolding,    // 非ホールド時：右側に表示
-        'btn-ratio': !isHolding,   // 非ホールド時：左側に表示
-        'btn-save': isHolding,     // ホールド時：右側に表示
-        'btn-cancel': isHolding    // ホールド時：左側に表示
-    };
-    
-    for (let id in btns) {
-        const el = document.getElementById(id);
-        if (el) el.style.display = btns[id] ? 'block' : 'none';
-    }
+    document.getElementById('btn-ratio').style.display = !isHolding ? 'block' : 'none';
+    document.getElementById('btn-hold').style.display = !isHolding ? 'block' : 'none';
+    document.getElementById('btn-cancel').style.display = isHolding ? 'block' : 'none';
+    document.getElementById('btn-save').style.display = isHolding ? 'block' : 'none';
 }
 
 async function asyncDetect() {
@@ -60,10 +52,7 @@ async function asyncDetect() {
     const imgData = await new Promise(r => setTimeout(() => r(octx.getImageData(0, 0, sw, sh)), 0));
     const data = imgData.data;
 
-    let baseY = (points.p1.y + points.p2.y) / 2;
-    if (Math.abs(baseY - 540) > 216) { baseY = 540; } 
-
-    const scanY = baseY * (sh / 1080);
+    const scanY = 540 * (sh / 1080); 
     const scanLines = [scanY - 10, scanY, scanY + 10];
     let allMinX = sw, allMaxX = 0, validY = [];
 
@@ -90,13 +79,15 @@ async function asyncDetect() {
 
     if (validY.length > 0) {
         const scale = 1920 / sw;
-        const detectedY = (validY.reduce((a,b)=>a+b)/validY.length) * (1080/sh);
-        const finalY = Math.max(324, Math.min(756, detectedY));
+        const finalY = 540; 
+
         points.p1.x = allMinX * scale;
-        points.p2.x = (allMaxX * scale) + 12; // 境界オフセット
+        // 【修正】余計なオフセットを完全に削除。検出した右端(allMaxX)をそのまま中心に。
+        points.p2.x = allMaxX * scale; 
         points.p1.y = points.p2.y = finalY;
+
         const fishLen = points.p2.x - points.p1.x;
-        points.p3.x = points.p2.x + (fishLen * 0.08); 
+        points.p3.x = points.p2.x + (fishLen * 0.1); // 尾叉から約10%の位置に尾先を初期配置
         points.p3.y = finalY + (fishLen * 0.1); 
     }
     offscreen.width = 1;
@@ -125,7 +116,7 @@ function render() {
 
     if (!isHolding) {
         ctx.fillStyle = "rgba(0, 255, 0, 0.15)";
-        const guideY = oy + (points.p1.y * scale) - (30 * scale);
+        const guideY = oy + (540 * scale) - (30 * scale);
         ctx.fillRect(ox, guideY, 1920 * scale, 60 * scale);
     }
 
@@ -186,13 +177,11 @@ function finalizeAndSave() {
 function initTouchEvents() {
     const getPos = (e) => {
         const r = canvas.getBoundingClientRect();
-        const stageW = r.width * window.devicePixelRatio;
-        const stageH = r.height * window.devicePixelRatio;
-        const scale = Math.min(stageW / 1920, stageH / 1080);
-        const ox = (stageW - 1920 * scale) / 2;
-        const oy = (stageH - 1080 * scale) / 2;
-        const touchX = (e.touches[0].clientX - r.left) * window.devicePixelRatio;
-        const touchY = (e.touches[0].clientY - r.top) * window.devicePixelRatio;
+        const touchX = (e.touches[0].clientX - r.left) * (canvas.width / r.width);
+        const touchY = (e.touches[0].clientY - r.top) * (canvas.height / r.height);
+        const scale = Math.min(canvas.width / 1920, canvas.height / 1080);
+        const ox = (canvas.width - 1920 * scale) / 2;
+        const oy = (canvas.height - 1080 * scale) / 2;
         return { x: (touchX - ox) / scale, y: (touchY - oy) / scale };
     };
     canvas.addEventListener('touchstart', (e) => {
