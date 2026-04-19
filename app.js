@@ -42,7 +42,7 @@ function toggleHold(state) {
     // ボタンの表示切り替え（右手操作を優先）
     const btns = { 
         'btn-hold': !isHolding,    // 非ホールド時：右側に表示
-        'btn-ratio': !isHolding,   // 非ホールド時：左側に表示（入れ替え）
+        'btn-ratio': !isHolding,   // 非ホールド時：左側に表示
         'btn-save': isHolding,     // ホールド時：右側に表示
         'btn-cancel': isHolding    // ホールド時：左側に表示
     };
