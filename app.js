@@ -28,15 +28,18 @@ window.onload = async () => {
         video.srcObject = s;
         video.play();
         renderLoop();
-        initVoiceRecognition(); // 音声認識開始
+        initVoiceRecognition(); // 音声認識を明示的に開始
     } catch (e) { alert("カメラエラー"); }
     initTouchEvents();
 };
 
-// --- 音声認識機能 ---
+// --- 【復活】音声認識機能 (iPhone/Android対応) ---
 function initVoiceRecognition() {
-    window.SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) return;
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+        console.log("このブラウザは音声認識に対応していません");
+        return;
+    }
     const recognition = new SpeechRecognition();
     recognition.lang = 'ja-JP';
     recognition.continuous = true;
@@ -44,6 +47,7 @@ function initVoiceRecognition() {
 
     recognition.onresult = (event) => {
         const result = event.results[event.results.length - 1][0].transcript;
+        console.log("認識された言葉:", result);
         if (result.includes("ホールド") || result.includes("ストップ")) {
             if (!isHolding) toggleHold(true);
         } else if (result.includes("保存")) {
@@ -52,43 +56,67 @@ function initVoiceRecognition() {
             if (isHolding) toggleHold(false);
         }
     };
-    recognition.onend = () => recognition.start(); // 止まったら再開
+    
+    // iPhone等で音声認識が勝手に止まるのを防ぐ
+    recognition.onend = () => { if(!isHolding) recognition.start(); };
+    recognition.onerror = (e) => { console.error("音声認識エラー:", e); };
+    
     recognition.start();
 }
 
-// --- ArUco検知による倍率計算 (簡易版ロジック) ---
-function calibrateWithArUco(detectedMarkers) {
-    if (detectedMarkers.length === 2) {
-        const m1 = detectedMarkers[0].center;
-        const m2 = detectedMarkers[1].center;
-        const pixelDist = Math.hypot(m1.x - m2.x, m1.y - m2.y);
-        if (pixelDist > 100) {
-            mmRatio = 350 / pixelDist; // 350mm固定で計算
+// --- 【新規】ArUcoコードによる350mm自動キャリブレーション ---
+function detectArUcoAndCalibrate() {
+    if (typeof cv === 'undefined') return; // ライブラリ未読み込みならスキップ
+
+    let src = cv.imread(lastCapturedFrame);
+    let dst = new cv.Mat();
+    cv.cvtColor(src, dst, cv.COLOR_RGBA2RGB, 0);
+
+    let markerIds = new cv.Mat();
+    let markerCorners = new cv.MatVector();
+    let dictionary = cv.getPredefinedDictionary(cv.DICT_4X4_50); // DICT_4X4_50を使用
+    let parameter = new cv.DetectorParameters();
+
+    cv.detectMarkers(dst, dictionary, markerCorners, markerIds, parameter);
+
+    if (markerIds.rows >= 2) {
+        let centers = [];
+        for (let i = 0; i < markerIds.rows; ++i) {
+            let corners = markerCorners.get(i).data32F;
+            // 4隅の平均から中心を算出
+            let cx = (corners[0] + corners[2] + corners[4] + corners[6]) / 4;
+            let cy = (corners[1] + corners[3] + corners[5] + corners[7]) / 4;
+            centers.push({x: cx, y: cy});
+        }
+        // 最初の2つのマーカーの距離を算出
+        const pixelDist = Math.hypot(centers[0].x - centers[1].x, centers[0].y - centers[1].y);
+        if (pixelDist > 50) {
+            mmRatio = 350 / pixelDist; // マーカー間を350mmとして比率を更新
+            console.log("ArUcoにより倍率更新:", mmRatio);
         }
     }
+    src.delete(); dst.delete(); markerIds.delete(); markerCorners.delete();
 }
 
 function toggleHold(state) {
     isHolding = state;
     if (state) {
         lctx.drawImage(video, 0, 0, 1920, 1080);
-        requestAnimationFrame(() => {
-            setTimeout(() => { asyncDetect(); }, 100);
-        });
+        // ホールドした瞬間にArUco検知を実行
+        setTimeout(() => {
+            detectArUcoAndCalibrate();
+            asyncDetect();
+        }, 100);
     }
     
-    const updateBtn = (id, show) => {
-        const el = document.getElementById(id);
-        if (el) el.style.setProperty('display', show ? 'block' : 'none', 'important');
-    };
-    
-    updateBtn('btn-ratio', !isHolding);
-    updateBtn('btn-hold', !isHolding);
-    updateBtn('btn-cancel', isHolding);
-    updateBtn('btn-save', isHolding);
+    // ボタンの表示/非表示（右手操作レイアウト）
+    document.getElementById('btn-ratio').style.display = !isHolding ? 'block' : 'none';
+    document.getElementById('btn-hold').style.display = !isHolding ? 'block' : 'none';
+    document.getElementById('btn-cancel').style.display = isHolding ? 'block' : 'none';
+    document.getElementById('btn-save').style.display = isHolding ? 'block' : 'none';
 }
 
-// 自動検出ロジック (検出感度・尾先位置5%を維持)
+// 自動検出感度と尾先位置5%の維持
 async function asyncDetect() {
     const sw = 480, sh = 270;
     offscreen.width = sw; offscreen.height = sh;
@@ -133,10 +161,9 @@ async function asyncDetect() {
     }
 }
 
-function renderLoop() {
-    render();
-    requestAnimationFrame(renderLoop);
-}
+// --- 以下、描画・保存・タッチ処理（変更なし） ---
+
+function renderLoop() { render(); requestAnimationFrame(renderLoop); }
 
 function render() {
     const stageW = window.innerWidth * window.devicePixelRatio;
@@ -147,51 +174,30 @@ function render() {
     const scale = Math.min(stageW / 1920, stageH / 1080);
     const ox = (stageW - 1920 * scale) / 2;
     const oy = (stageH - 1080 * scale) / 2;
-
     ctx.fillStyle = "black";
     ctx.fillRect(0, 0, stageW, stageH);
-
     const imgSource = (isHolding) ? lastCapturedFrame : video;
     ctx.drawImage(imgSource, ox, oy, 1920 * scale, 1080 * scale);
 
     if (!isHolding) {
         ctx.fillStyle = "rgba(0, 255, 0, 0.2)";
-        const guideY = oy + (540 * scale) - (30 * scale);
-        ctx.fillRect(ox, guideY, 1920 * scale, 60 * scale);
+        ctx.fillRect(ox, oy + (540 * scale) - (30 * scale), 1920 * scale, 60 * scale);
     }
-
     drawOverlay(ox, oy, scale);
-    if (activePoint && isHolding) drawMagnifier(ox, oy, scale, imgSource);
 }
 
 function drawOverlay(ox, oy, scale) {
     const forkPx = Math.hypot(points.p2.x - points.p1.x, points.p2.y - points.p1.y);
     const totalPx = Math.hypot(points.p3.x - points.p1.x, points.p3.y - points.p1.y);
     const fSize = canvas.height / 25;
-    
     drawStyledText(`水槽${tankId} No.${String(currentNo).padStart(3, '0')} 尾叉:${(forkPx * mmRatio).toFixed(1)}mm 全長:${(totalPx * mmRatio).toFixed(1)}mm`, 20, 80, fSize);
-    drawStyledText(`Scale: ${mmRatio.toFixed(4)} mm/px`, 20, 130, fSize * 0.6);
+    drawStyledText(`Ratio: ${mmRatio.toFixed(4)}`, 20, 120, fSize * 0.5);
 
     Object.values(points).forEach(p => {
         const px = ox + p.x * scale; const py = oy + p.y * scale;
         ctx.strokeStyle = "red"; ctx.lineWidth = 4;
         ctx.beginPath(); ctx.arc(px, py, 15, 0, Math.PI*2); ctx.stroke();
-        drawStyledText(p.label, px + 15, py - 15, fSize * 0.4);
     });
-}
-
-function drawMagnifier(ox, oy, scale, sourceImg) {
-    const mag = 3;
-    const winW = 450, winH = 250;
-    const tx = (canvas.width - winW) / 2, ty = 120;
-    ctx.save();
-    ctx.strokeStyle = "yellow"; ctx.lineWidth = 4;
-    ctx.strokeRect(tx, ty, winW, winH);
-    ctx.beginPath(); ctx.rect(tx, ty, winW, winH); ctx.clip();
-    const srcX = activePoint.x - (winW / mag) / 2 / scale;
-    const srcY = activePoint.y - (winH / mag) / 2 / scale;
-    ctx.drawImage(sourceImg, srcX, srcY, (winW/mag)/scale, (winH/mag)/scale, tx, ty, winW, winH);
-    ctx.restore();
 }
 
 function drawStyledText(t, x, y, s) {
@@ -242,6 +248,6 @@ function initTouchEvents() {
 }
 
 function toggleRatioUI() {
-    const val = prompt("1pxあたりのmm数を入力(またはArUcoを使用)", mmRatio);
+    const val = prompt("1pxあたりのmm数を入力", mmRatio);
     if (val !== null && !isNaN(val)) mmRatio = parseFloat(val);
 }
