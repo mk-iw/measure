@@ -8,8 +8,6 @@
     <style>
         body { margin: 0; overflow: hidden; background: #000; font-family: sans-serif; }
         canvas { display: block; width: 100vw; height: 100vh; touch-action: none; }
-        
-        /* ボタン位置を固定。下の文字が見えるよう高さを調整 */
         .controls {
             position: fixed; top: 0; left: 0; width: 100%; height: 70px;
             display: flex; z-index: 1000; pointer-events: none;
@@ -23,7 +21,6 @@
         #btn-cancel { background: #666; color: white; display: none; }
         #btn-hold { background: #2196F3; color: white; }
         #btn-save { background: #ff4444; color: white; display: none; }
-
         #status-bar {
             position: fixed; top: 75px; left: 10px; color: yellow;
             font-size: 12px; background: rgba(0,0,0,0.6); padding: 4px 8px;
@@ -49,7 +46,7 @@
 let currentNo = 1; let tankId = "1"; let mmRatio = 0.400; 
 let isHolding = false; let activePoint = null;
 let cvReady = false;
-let detectedArUcoPoints = []; // マーカー描画用
+let detectedArUcoPoints = [];
 
 function onOpenCvReady() {
     cvReady = true;
@@ -108,33 +105,49 @@ function initVoiceRecognition() {
     recognition.start();
 }
 
+// --- ArUco検知ロジックの強化版 ---
 function detectArUcoAndCalibrate() {
     if (!cvReady) return;
     detectedArUcoPoints = [];
     try {
         let src = cv.imread(lastCapturedFrame);
         let dst = new cv.Mat();
-        cv.cvtColor(src, dst, cv.COLOR_RGBA2RGB, 0);
+        cv.cvtColor(src, dst, cv.COLOR_RGBA2GRAY, 0); // グレースケールで解析精度向上
 
         let markerIds = new cv.Mat();
         let markerCorners = new cv.MatVector();
-        let dictionary = cv.getPredefinedDictionary(cv.DICT_4X4_50);
+        // 辞書を 6x6_250 に変更して汎用性を高める
+        let dictionary = cv.getPredefinedDictionary(cv.DICT_6X6_250);
         let parameter = new cv.DetectorParameters();
+        
+        // 検出パラメータの微調整
+        parameter.adaptiveThreshWinSizeMin = 3;
+        parameter.adaptiveThreshWinSizeMax = 23;
+        parameter.adaptiveThreshWinSizeStep = 10;
 
         cv.detectMarkers(dst, dictionary, markerCorners, markerIds, parameter);
 
         if (markerIds.rows >= 2) {
-            let p1 = markerCorners.get(0).data32F;
-            let p2 = markerCorners.get(1).data32F;
-            let c1x = (p1[0]+p1[2]+p1[4]+p1[6])/4; let c1y = (p1[1]+p1[3]+p1[5]+p1[7])/4;
-            let c2x = (p2[0]+p2[2]+p2[4]+p2[6])/4; let c2y = (p2[1]+p2[3]+p2[5]+p2[7])/4;
+            let centers = [];
+            for (let i = 0; i < markerIds.rows; i++) {
+                let corners = markerCorners.get(i).data32F;
+                let cx = (corners[0] + corners[2] + corners[4] + corners[6]) / 4;
+                let cy = (corners[1] + corners[3] + corners[5] + corners[7]) / 4;
+                centers.push({x: cx, y: cy});
+                detectedArUcoPoints.push({x: cx, y: cy});
+            }
             
-            detectedArUcoPoints = [{x:c1x, y:c1y}, {x:c2x, y:c2y}];
-            const pixelDist = Math.hypot(c1x - c2x, c1y - c2y);
-            if (pixelDist > 50) mmRatio = 350 / pixelDist;
+            // 2つのマーカー間のピクセル距離を算出
+            const pixelDist = Math.hypot(centers[0].x - centers[1].x, centers[0].y - centers[1].y);
+            if (pixelDist > 50) {
+                mmRatio = 350 / pixelDist; // 350mm基準で比率を自動更新
+                updateStatus(`ArUco OK: ${mmRatio.toFixed(4)} mm/px`);
+            }
+        } else {
+            console.log("マーカーが2つ以上見つかりません");
         }
         src.delete(); dst.delete(); markerIds.delete(); markerCorners.delete();
-    } catch (e) { console.error(e); }
+    } catch (e) { console.error("ArUco分析エラー:", e); }
 }
 
 function toggleHold(state) {
@@ -190,11 +203,11 @@ function render() {
     ctx.fillStyle = "#000"; ctx.fillRect(0, 0, stageW, stageH);
     ctx.drawImage(isHolding ? lastCapturedFrame : video, ox, oy, 1920 * scale, 1080 * scale);
 
-    // ArUco検知の可視化
+    // 検知されたArUco位置を青い枠で可視化
     detectedArUcoPoints.forEach((p, idx) => {
-        ctx.strokeStyle = "cyan"; ctx.lineWidth = 5;
-        ctx.strokeRect(ox + (p.x-30)*scale, oy + (p.y-30)*scale, 60*scale, 60*scale);
-        drawStyledText(`ID:${idx}`, ox + p.x*scale, oy + p.y*scale - 40*scale, 20*scale);
+        ctx.strokeStyle = "#00ffff"; ctx.lineWidth = 5;
+        ctx.strokeRect(ox + (p.x-40)*scale, oy + (p.y-40)*scale, 80*scale, 80*scale);
+        drawStyledText(`M:${idx}`, ox + p.x*scale, oy + p.y*scale - 50*scale, 20*scale);
     });
 
     if (!isHolding) {
@@ -202,12 +215,11 @@ function render() {
         ctx.fillRect(ox, oy + (540 * scale) - (30 * scale), 1920 * scale, 60 * scale);
     }
     
-    // 測定結果表示（ボタンに隠れないよう少し下に配置：y=140〜）
     const forkPx = Math.hypot(points.p2.x - points.p1.x, points.p2.y - points.p1.y);
     const totalPx = Math.hypot(points.p3.x - points.p1.x, points.p3.y - points.p1.y);
     const fSize = canvas.height / 28;
     drawStyledText(`水槽${tankId} No.${String(currentNo).padStart(3, '0')} 尾叉:${(forkPx * mmRatio).toFixed(1)}mm 全長:${(totalPx * mmRatio).toFixed(1)}mm`, 20, 140, fSize);
-    drawStyledText(`Ratio: ${mmRatio.toFixed(4)} (350mm Mode)`, 20, 180, fSize * 0.6);
+    drawStyledText(`Ratio: ${mmRatio.toFixed(4)} (ArUco 350mm Mode)`, 20, 180, fSize * 0.6);
 
     Object.values(points).forEach(p => {
         ctx.strokeStyle = "red"; ctx.lineWidth = 4;
