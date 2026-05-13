@@ -1,5 +1,12 @@
 let currentNo = 1; let tankId = "1"; let mmRatio = 0.400; 
 let isHolding = false; let activePoint = null;
+let cvReady = false;
+
+// ライブラリ読み込み完了通知
+function onOpenCvReady() {
+    cvReady = true;
+    document.getElementById('status').innerText = "Library: OK / Voice: Waiting...";
+}
 
 const lastCapturedFrame = document.createElement('canvas');
 lastCapturedFrame.width = 1920; lastCapturedFrame.height = 1080;
@@ -28,26 +35,26 @@ window.onload = async () => {
         video.srcObject = s;
         video.play();
         renderLoop();
-        initVoiceRecognition(); // 音声認識を明示的に開始
     } catch (e) { alert("カメラエラー"); }
     initTouchEvents();
+    // 画面タップ時に音声認識を開始（ブラウザのセキュリティ制限対策）
+    window.addEventListener('click', initVoiceRecognition, { once: true });
 };
 
-// --- 【復活】音声認識機能 (iPhone/Android対応) ---
+// --- 音声認識 (確実な起動) ---
 function initVoiceRecognition() {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-        console.log("このブラウザは音声認識に対応していません");
-        return;
-    }
+    if (!SpeechRecognition) return;
     const recognition = new SpeechRecognition();
     recognition.lang = 'ja-JP';
     recognition.continuous = true;
-    recognition.interimResults = false;
+    
+    recognition.onstart = () => {
+        document.getElementById('status').innerText = `Library: ${cvReady?'OK':'Wait'} / Voice: ON`;
+    };
 
     recognition.onresult = (event) => {
         const result = event.results[event.results.length - 1][0].transcript;
-        console.log("認識された言葉:", result);
         if (result.includes("ホールド") || result.includes("ストップ")) {
             if (!isHolding) toggleHold(true);
         } else if (result.includes("保存")) {
@@ -56,154 +63,121 @@ function initVoiceRecognition() {
             if (isHolding) toggleHold(false);
         }
     };
-    
-    // iPhone等で音声認識が勝手に止まるのを防ぐ
-    recognition.onend = () => { if(!isHolding) recognition.start(); };
-    recognition.onerror = (e) => { console.error("音声認識エラー:", e); };
-    
+    recognition.onend = () => recognition.start();
     recognition.start();
 }
 
-// --- 【新規】ArUcoコードによる350mm自動キャリブレーション ---
+// --- ArUco 350mm検知 ---
 function detectArUcoAndCalibrate() {
-    if (typeof cv === 'undefined') return; // ライブラリ未読み込みならスキップ
-
-    let src = cv.imread(lastCapturedFrame);
-    let dst = new cv.Mat();
-    cv.cvtColor(src, dst, cv.COLOR_RGBA2RGB, 0);
-
-    let markerIds = new cv.Mat();
-    let markerCorners = new cv.MatVector();
-    let dictionary = cv.getPredefinedDictionary(cv.DICT_4X4_50); // DICT_4X4_50を使用
-    let parameter = new cv.DetectorParameters();
-
-    cv.detectMarkers(dst, dictionary, markerCorners, markerIds, parameter);
-
-    if (markerIds.rows >= 2) {
-        let centers = [];
-        for (let i = 0; i < markerIds.rows; ++i) {
-            let corners = markerCorners.get(i).data32F;
-            // 4隅の平均から中心を算出
-            let cx = (corners[0] + corners[2] + corners[4] + corners[6]) / 4;
-            let cy = (corners[1] + corners[3] + corners[5] + corners[7]) / 4;
-            centers.push({x: cx, y: cy});
-        }
-        // 最初の2つのマーカーの距離を算出
-        const pixelDist = Math.hypot(centers[0].x - centers[1].x, centers[0].y - centers[1].y);
-        if (pixelDist > 50) {
-            mmRatio = 350 / pixelDist; // マーカー間を350mmとして比率を更新
-            console.log("ArUcoにより倍率更新:", mmRatio);
-        }
+    if (!cvReady) {
+        console.warn("OpenCV未準備");
+        return;
     }
-    src.delete(); dst.delete(); markerIds.delete(); markerCorners.delete();
+    try {
+        let src = cv.imread(lastCapturedFrame);
+        let dst = new cv.Mat();
+        cv.cvtColor(src, dst, cv.COLOR_RGBA2RGB, 0);
+
+        let markerIds = new cv.Mat();
+        let markerCorners = new cv.MatVector();
+        let dictionary = cv.getPredefinedDictionary(cv.DICT_4X4_50);
+        let parameter = new cv.DetectorParameters();
+
+        cv.detectMarkers(dst, dictionary, markerCorners, markerIds, parameter);
+
+        if (markerIds.rows >= 2) {
+            let p1 = markerCorners.get(0).data32F;
+            let p2 = markerCorners.get(1).data32F;
+            // 各中心点
+            let c1x = (p1[0]+p1[2]+p1[4]+p1[6])/4; let c1y = (p1[1]+p1[3]+p1[5]+p1[7])/4;
+            let c2x = (p2[0]+p2[2]+p2[4]+p2[6])/4; let c2y = (p2[1]+p2[3]+p2[5]+p2[7])/4;
+            
+            const pixelDist = Math.hypot(c1x - c2x, c1y - c2y);
+            mmRatio = 350 / pixelDist; // 350mm基準
+        }
+        src.delete(); dst.delete(); markerIds.delete(); markerCorners.delete();
+    } catch (e) { console.error("ArUcoエラー:", e); }
 }
 
 function toggleHold(state) {
     isHolding = state;
     if (state) {
         lctx.drawImage(video, 0, 0, 1920, 1080);
-        // ホールドした瞬間にArUco検知を実行
         setTimeout(() => {
             detectArUcoAndCalibrate();
             asyncDetect();
-        }, 100);
+        }, 150);
     }
     
-    // ボタンの表示/非表示（右手操作レイアウト）
     document.getElementById('btn-ratio').style.display = !isHolding ? 'block' : 'none';
     document.getElementById('btn-hold').style.display = !isHolding ? 'block' : 'none';
     document.getElementById('btn-cancel').style.display = isHolding ? 'block' : 'none';
     document.getElementById('btn-save').style.display = isHolding ? 'block' : 'none';
 }
 
-// 自動検出感度と尾先位置5%の維持
+// 魚体検出（尾先5%）
 async function asyncDetect() {
     const sw = 480, sh = 270;
     offscreen.width = sw; offscreen.height = sh;
     octx.drawImage(lastCapturedFrame, 0, 0, sw, sh);
-    const imgData = octx.getImageData(0, 0, sw, sh);
-    const data = imgData.data;
-
+    const data = octx.getImageData(0, 0, sw, sh).data;
     const scanY = 540 * (sh / 1080); 
-    const scanLines = [scanY - 12, scanY, scanY + 12];
-    let allMinX = sw, allMaxX = 0, validY = [];
+    let allMinX = sw, allMaxX = 0;
 
-    scanLines.forEach(y => {
-        let lineMinX = sw, lineMaxX = 0;
-        const row = Math.floor(y);
-        if (row < 0 || row >= sh) return;
-        for (let x = 10; x < sw - 10; x += 1) {
-            const i = (row * sw + x) * 4;
-            const prevI = (row * sw + (x - 4)) * 4;
-            const gray = data[i] * 0.3 + data[i+1] * 0.59 + data[i+2] * 0.11;
-            const prevGray = data[prevI] * 0.3 + data[prevI+1] * 0.59 + data[prevI+2] * 0.11;
-            if (Math.abs(gray - prevGray) > 20) {
-                if (x < lineMinX) lineMinX = x;
-                if (x > lineMaxX) lineMaxX = x;
-            }
+    for (let x = 10; x < sw - 10; x++) {
+        const i = (Math.floor(scanY) * sw + x) * 4;
+        const prevI = (Math.floor(scanY) * sw + (x - 4)) * 4;
+        if (Math.abs(data[i] - data[prevI]) > 20) {
+            if (x < allMinX) allMinX = x;
+            if (x > allMaxX) allMaxX = x;
         }
-        if (lineMaxX - lineMinX > 50) {
-            if (lineMinX < allMinX) allMinX = lineMinX;
-            if (lineMaxX > allMaxX) allMaxX = lineMaxX;
-            validY.push(y);
-        }
-    });
+    }
 
-    if (validY.length > 0) {
+    if (allMaxX > allMinX) {
         const scale = 1920 / sw;
         points.p1.x = allMinX * scale;
         points.p2.x = allMaxX * scale; 
         points.p1.y = points.p2.y = 540;
-
         const fishLen = points.p2.x - points.p1.x;
         points.p3.x = points.p2.x + (fishLen * 0.05); // 尾先5%
         points.p3.y = 540 + (fishLen * 0.08); 
     }
 }
 
-// --- 以下、描画・保存・タッチ処理（変更なし） ---
-
 function renderLoop() { render(); requestAnimationFrame(renderLoop); }
 
 function render() {
     const stageW = window.innerWidth * window.devicePixelRatio;
     const stageH = window.innerHeight * window.devicePixelRatio;
-    if (canvas.width !== stageW || canvas.height !== stageH) {
-        canvas.width = stageW; canvas.height = stageH;
-    }
+    canvas.width = stageW; canvas.height = stageH;
     const scale = Math.min(stageW / 1920, stageH / 1080);
     const ox = (stageW - 1920 * scale) / 2;
     const oy = (stageH - 1080 * scale) / 2;
-    ctx.fillStyle = "black";
-    ctx.fillRect(0, 0, stageW, stageH);
-    const imgSource = (isHolding) ? lastCapturedFrame : video;
-    ctx.drawImage(imgSource, ox, oy, 1920 * scale, 1080 * scale);
+
+    ctx.fillStyle = "black"; ctx.fillRect(0, 0, stageW, stageH);
+    ctx.drawImage(isHolding ? lastCapturedFrame : video, ox, oy, 1920 * scale, 1080 * scale);
 
     if (!isHolding) {
         ctx.fillStyle = "rgba(0, 255, 0, 0.2)";
         ctx.fillRect(ox, oy + (540 * scale) - (30 * scale), 1920 * scale, 60 * scale);
     }
-    drawOverlay(ox, oy, scale);
-}
-
-function drawOverlay(ox, oy, scale) {
+    
+    // UI表示
     const forkPx = Math.hypot(points.p2.x - points.p1.x, points.p2.y - points.p1.y);
     const totalPx = Math.hypot(points.p3.x - points.p1.x, points.p3.y - points.p1.y);
     const fSize = canvas.height / 25;
     drawStyledText(`水槽${tankId} No.${String(currentNo).padStart(3, '0')} 尾叉:${(forkPx * mmRatio).toFixed(1)}mm 全長:${(totalPx * mmRatio).toFixed(1)}mm`, 20, 80, fSize);
-    drawStyledText(`Ratio: ${mmRatio.toFixed(4)}`, 20, 120, fSize * 0.5);
+    drawStyledText(`Ratio: ${mmRatio.toFixed(4)} (ArUco 350mm Mode)`, 20, 120, fSize * 0.5);
 
     Object.values(points).forEach(p => {
-        const px = ox + p.x * scale; const py = oy + p.y * scale;
         ctx.strokeStyle = "red"; ctx.lineWidth = 4;
-        ctx.beginPath(); ctx.arc(px, py, 15, 0, Math.PI*2); ctx.stroke();
+        ctx.beginPath(); ctx.arc(ox + p.x * scale, oy + p.y * scale, 15, 0, Math.PI*2); ctx.stroke();
     });
 }
 
 function drawStyledText(t, x, y, s) {
-    ctx.font = `bold ${s}px sans-serif`;
-    ctx.strokeStyle = "white"; ctx.lineWidth = 3; ctx.strokeText(t, x, y);
-    ctx.fillStyle = "black"; ctx.fillText(t, x, y);
+    ctx.font = `bold ${s}px sans-serif`; ctx.strokeStyle = "white"; ctx.lineWidth = 3;
+    ctx.strokeText(t, x, y); ctx.fillStyle = "black"; ctx.fillText(t, x, y);
 }
 
 function finalizeAndSave() {
@@ -211,31 +185,25 @@ function finalizeAndSave() {
     link.href = canvas.toDataURL("image/png");
     link.download = `水槽${tankId}_No${String(currentNo).padStart(3, '0')}.png`;
     link.click();
-    currentNo++;
-    toggleHold(false);
+    currentNo++; toggleHold(false);
 }
 
 function initTouchEvents() {
     const getPos = (e) => {
         const r = canvas.getBoundingClientRect();
-        const touchX = (e.touches[0].clientX - r.left) * (canvas.width / r.width);
-        const touchY = (e.touches[0].clientY - r.top) * (canvas.height / r.height);
         const scale = Math.min(canvas.width / 1920, canvas.height / 1080);
         const ox = (canvas.width - 1920 * scale) / 2;
         const oy = (canvas.height - 1080 * scale) / 2;
-        return { x: (touchX - ox) / scale, y: (touchY - oy) / scale };
+        return { 
+            x: ((e.touches[0].clientX - r.left) * (canvas.width / r.width) - ox) / scale, 
+            y: ((e.touches[0].clientY - r.top) * (canvas.height / r.height) - oy) / scale 
+        };
     };
     canvas.addEventListener('touchstart', (e) => {
         if(!isHolding) return;
         const pos = getPos(e);
-        activePoint = null;
-        let minDist = 120;
-        for (const key in points) {
-            const p = points[key];
-            const d = Math.hypot(p.x - pos.x, p.y - pos.y);
-            if (d < minDist) { minDist = d; activePoint = p; }
-        }
-    }, {passive: false});
+        activePoint = Object.values(points).find(p => Math.hypot(p.x - pos.x, p.y - pos.y) < 100);
+    });
     canvas.addEventListener('touchmove', (e) => {
         if(activePoint) {
             const pos = getPos(e);

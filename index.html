@@ -3,55 +3,283 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Fish-Measure Pro</title>
+    <title>魚体計測システム - ArUco & Voice</title>
+    <!-- ArUco検知用ライブラリ (非同期読み込み) -->
+    <script async src="https://docs.opencv.org/4.5.2/opencv.js" onload="onOpenCvReady();"></script>
     <style>
-        body { margin: 0; background: #000; overflow: hidden; position: fixed; width: 100vw; height: 100vh; }
-        video { display: none; }
-        canvas { width: 100%; height: 100%; object-fit: contain; }
-        #ui-header {
-            position: absolute; top: 0; left: 0; width: 100%; height: 44px;
-            display: flex; justify-content: center; align-items: center; 
-            z-index: 1000; background: rgba(0,0,0,0.8);
-        }
-        button { height: 34px; flex: 1; margin: 0 3px; font-size: 12px; font-weight: bold; border-radius: 4px; border: 1px solid #fff; }
-        #btn-hold { background: #fff; color: #000; }
-        #btn-save { background: #2ecc71; color: #fff; display: none; }
-        #btn-ratio { background: #3498db; color: #fff; }
+        body { margin: 0; overflow: hidden; background: #000; font-family: sans-serif; }
+        canvas { display: block; width: 100vw; height: 100vh; touch-action: none; }
         
-        /* 被らないように位置を top: 110px に下げました */
-        #ratio-container {
-            position: fixed;
-            bottom: 20px; /* 最下段 */
-            left: 50%;
-            transform: translateX(-50%);
-            width: 80%;
-            background: rgba(0,0,0,0.7);
-            padding: 15px;
-            border-radius: 10px;
-            display: none;
-            z-index: 100;
+        /* 上部固定ボタン：右手でメイン操作ができる配置 */
+        .controls {
+            position: fixed; top: 0; left: 0; width: 100%; height: 80px;
+            display: flex; z-index: 1000; pointer-events: none;
         }
-        #ratio-container input {
-            width: 100%;
+        button {
+            flex: 1; margin: 5px; font-size: 20px; font-weight: bold;
+            border-radius: 8px; border: none; pointer-events: auto;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        /* 左側：補助機能（調整・キャンセル） */
+        #btn-ratio { background: #555; color: white; }
+        #btn-cancel { background: #666; color: white; display: none; }
+        /* 右側：メイン操作（ホールド・保存） */
+        #btn-hold { background: #2196F3; color: white; }
+        #btn-save { background: #ff4444; color: white; display: none; }
+
+        /* ステータス表示 */
+        #status-bar {
+            position: fixed; top: 90px; left: 10px; color: yellow;
+            font-size: 14px; background: rgba(0,0,0,0.6); padding: 5px 10px;
+            border-radius: 4px; pointer-events: none; z-index: 1001;
         }
     </style>
 </head>
 <body>
-<div class="controls" style="position: fixed; top: 0; left: 0; width: 100%; display: flex; height: 80px; z-index: 1000; pointer-events: none;">
-    <button id="btn-ratio" onclick="toggleRatioUI()" style="flex: 1; font-size: 20px; pointer-events: auto;">倍率調整</button>
-    <button id="btn-cancel" onclick="toggleHold(false)" style="flex: 1; font-size: 20px; display: none; pointer-events: auto;">キャンセル</button>
-    <button id="btn-hold" onclick="toggleHold(true)" style="flex: 1; font-size: 20px; pointer-events: auto;">ホールド</button>
-    <button id="btn-save" onclick="finalizeAndSave()" style="flex: 1; font-size: 20px; display: none; background: #ff4444; color: white; pointer-events: auto;">保存</button>
+
+<div id="status-bar">Library: Loading... / Voice: Tap Screen to Start</div>
+
+<div class="controls">
+    <button id="btn-ratio" onclick="toggleRatioUI()">倍率調整</button>
+    <button id="btn-cancel" onclick="toggleHold(false)">キャンセル</button>
+    <button id="btn-hold" onclick="toggleHold(true)">ホールド</button>
+    <button id="btn-save" onclick="finalizeAndSave()">保存</button>
 </div>
 
-    <div id="ratio-container">
-        <div>倍率校正 (mm/px): <span id="ratio-val">0.400</span></div>
-        <input type="range" id="ratio-slider" min="0.1" max="1.0" step="0.001" value="0.400" oninput="updateRatio(this.value)">
-        <button onclick="toggleRatioUI()" style="width:100px; margin-top:10px;">閉じる</button>
-    </div>
+<video id="video" style="display:none" playsinline></video>
+<canvas id="canvas-measure"></canvas>
 
-    <video id="video" autoplay playsinline></video>
-    <canvas id="canvas-measure"></canvas>
-    <script src="app.js"></script>
+<script>
+let currentNo = 1; let tankId = "1"; let mmRatio = 0.400; 
+let isHolding = false; let activePoint = null;
+let cvReady = false;
+
+// OpenCV.js 読み込み完了時
+function onOpenCvReady() {
+    cvReady = true;
+    updateStatus("Library: OK / Voice: Waiting for Tap");
+}
+
+function updateStatus(text) {
+    document.getElementById('status-bar').innerText = text;
+}
+
+const lastCapturedFrame = document.createElement('canvas');
+lastCapturedFrame.width = 1920; lastCapturedFrame.height = 1080;
+const lctx = lastCapturedFrame.getContext('2d', { alpha: false });
+
+const offscreen = document.createElement('canvas');
+const octx = offscreen.getContext('2d', { willReadFrequently: true });
+
+let points = {
+    p1: {x: 400, y: 540, label: "口先"},
+    p2: {x: 900, y: 540, label: "尾叉"},
+    p3: {x: 1000, y: 640, label: "尾先"}
+};
+
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas-measure');
+const ctx = canvas.getContext('2d');
+
+window.onload = async () => {
+    tankId = prompt("水槽番号", "1") || "1";
+    currentNo = parseInt(prompt("開始No.", "001")) || 1;
+    try {
+        const s = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: "environment", width: {ideal: 1920}, height: {ideal: 1080} }
+        });
+        video.srcObject = s;
+        video.play();
+        renderLoop();
+    } catch (e) { alert("カメラエラー: " + e.message); }
+    initTouchEvents();
+    
+    // ブラウザ制約（音声開始にはユーザー操作が必要）のため、初回クリック時に起動
+    window.addEventListener('click', initVoiceRecognition, { once: true });
+};
+
+// --- 音声認識：ホールド / 保存 / キャンセル に対応 ---
+function initVoiceRecognition() {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+        updateStatus("Voice: Not Supported");
+        return;
+    }
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'ja-JP';
+    recognition.continuous = true;
+    
+    recognition.onstart = () => updateStatus(`Library: ${cvReady?'OK':'Wait'} / Voice: ON`);
+    recognition.onresult = (event) => {
+        const result = event.results[event.results.length - 1][0].transcript;
+        if (result.includes("ホールド") || result.includes("ストップ")) {
+            if (!isHolding) toggleHold(true);
+        } else if (result.includes("保存")) {
+            if (isHolding) finalizeAndSave();
+        } else if (result.includes("キャンセル") || result.includes("リセット")) {
+            if (isHolding) toggleHold(false);
+        }
+    };
+    recognition.onend = () => recognition.start(); // 常にループ
+    recognition.start();
+}
+
+// --- ArUco 350mm 自動キャリブレーション ---
+function detectArUcoAndCalibrate() {
+    if (!cvReady) return;
+    try {
+        let src = cv.imread(lastCapturedFrame);
+        let dst = new cv.Mat();
+        cv.cvtColor(src, dst, cv.COLOR_RGBA2RGB, 0);
+
+        let markerIds = new cv.Mat();
+        let markerCorners = new cv.MatVector();
+        let dictionary = cv.getPredefinedDictionary(cv.DICT_4X4_50);
+        let parameter = new cv.DetectorParameters();
+
+        cv.detectMarkers(dst, dictionary, markerCorners, markerIds, parameter);
+
+        if (markerIds.rows >= 2) {
+            let p1 = markerCorners.get(0).data32F;
+            let p2 = markerCorners.get(1).data32F;
+            // マーカー1と2の中心間距離をピクセルで計測
+            let c1x = (p1[0]+p1[2]+p1[4]+p1[6])/4; let c1y = (p1[1]+p1[3]+p1[5]+p1[7])/4;
+            let c2x = (p2[0]+p2[2]+p2[4]+p2[6])/4; let c2y = (p2[1]+p2[3]+p2[5]+p2[7])/4;
+            
+            const pixelDist = Math.hypot(c1x - c2x, c1y - c2y);
+            if (pixelDist > 50) {
+                mmRatio = 350 / pixelDist; // 350mm基準
+                console.log("ArUco Calibrated:", mmRatio);
+            }
+        }
+        src.delete(); dst.delete(); markerIds.delete(); markerCorners.delete();
+    } catch (e) { console.error("ArUco検知失敗:", e); }
+}
+
+function toggleHold(state) {
+    isHolding = state;
+    if (state) {
+        lctx.drawImage(video, 0, 0, 1920, 1080);
+        setTimeout(() => {
+            detectArUcoAndCalibrate(); // ArUco読み込み
+            asyncDetect();             // 魚体検出
+        }, 150);
+    }
+    
+    // ボタンの表示制御
+    document.getElementById('btn-ratio').style.display = !isHolding ? 'block' : 'none';
+    document.getElementById('btn-hold').style.display = !isHolding ? 'block' : 'none';
+    document.getElementById('btn-cancel').style.display = isHolding ? 'block' : 'none';
+    document.getElementById('btn-save').style.display = isHolding ? 'block' : 'none';
+}
+
+// 魚体自動検出（尾先5%の位置に配置）
+async function asyncDetect() {
+    const sw = 480, sh = 270;
+    offscreen.width = sw; offscreen.height = sh;
+    octx.drawImage(lastCapturedFrame, 0, 0, sw, sh);
+    const data = octx.getImageData(0, 0, sw, sh).data;
+    const scanY = 540 * (sh / 1080); 
+    let allMinX = sw, allMaxX = 0;
+
+    for (let x = 10; x < sw - 10; x++) {
+        const i = (Math.floor(scanY) * sw + x) * 4;
+        const prevI = (Math.floor(scanY) * sw + (x - 4)) * 4;
+        const diff = Math.abs((data[i]*0.3+data[i+1]*0.6)-(data[prevI]*0.3+data[prevI+1]*0.6));
+        if (diff > 20) {
+            if (x < allMinX) allMinX = x;
+            if (x > allMaxX) allMaxX = x;
+        }
+    }
+
+    if (allMaxX > allMinX + 20) {
+        const scale = 1920 / sw;
+        points.p1.x = allMinX * scale;
+        points.p2.x = allMaxX * scale; // 尾叉
+        points.p1.y = points.p2.y = 540;
+        
+        const fishLen = points.p2.x - points.p1.x;
+        points.p3.x = points.p2.x + (fishLen * 0.05); // 尾先：尾叉の5%右側
+        points.p3.y = 540 + (fishLen * 0.08); 
+    }
+}
+
+function renderLoop() { render(); requestAnimationFrame(renderLoop); }
+
+function render() {
+    const stageW = window.innerWidth * window.devicePixelRatio;
+    const stageH = window.innerHeight * window.devicePixelRatio;
+    canvas.width = stageW; canvas.height = stageH;
+    const scale = Math.min(stageW / 1920, stageH / 1080);
+    const ox = (stageW - 1920 * scale) / 2;
+    const oy = (stageH - 1080 * scale) / 2;
+
+    ctx.fillStyle = "#000"; ctx.fillRect(0, 0, stageW, stageH);
+    ctx.drawImage(isHolding ? lastCapturedFrame : video, ox, oy, 1920 * scale, 1080 * scale);
+
+    if (!isHolding) {
+        ctx.fillStyle = "rgba(0, 255, 0, 0.15)";
+        ctx.fillRect(ox, oy + (540 * scale) - (30 * scale), 1920 * scale, 60 * scale);
+    }
+    
+    // 文字情報の描画
+    const forkPx = Math.hypot(points.p2.x - points.p1.x, points.p2.y - points.p1.y);
+    const totalPx = Math.hypot(points.p3.x - points.p1.x, points.p3.y - points.p1.y);
+    const fSize = canvas.height / 25;
+    drawStyledText(`水槽${tankId} No.${String(currentNo).padStart(3, '0')} 尾叉:${(forkPx * mmRatio).toFixed(1)}mm 全長:${(totalPx * mmRatio).toFixed(1)}mm`, 20, 110, fSize);
+    drawStyledText(`Ratio: ${mmRatio.toFixed(4)} (ArUco Mode: 350mm)`, 20, 150, fSize * 0.5);
+
+    Object.values(points).forEach(p => {
+        ctx.strokeStyle = "red"; ctx.lineWidth = 4;
+        ctx.beginPath(); ctx.arc(ox + p.x * scale, oy + p.y * scale, 15, 0, Math.PI*2); ctx.stroke();
+        drawStyledText(p.label, ox + p.x * scale + 20, oy + p.y * scale - 20, fSize * 0.4);
+    });
+}
+
+function drawStyledText(t, x, y, s) {
+    ctx.font = `bold ${s}px sans-serif`; ctx.strokeStyle = "white"; ctx.lineWidth = 3;
+    ctx.strokeText(t, x, y); ctx.fillStyle = "black"; ctx.fillText(t, x, y);
+}
+
+function finalizeAndSave() {
+    const link = document.createElement('a');
+    link.href = canvas.toDataURL("image/png");
+    link.download = `水槽${tankId}_No${String(currentNo).padStart(3, '0')}.png`;
+    link.click();
+    currentNo++; toggleHold(false);
+}
+
+function initTouchEvents() {
+    const getPos = (e) => {
+        const r = canvas.getBoundingClientRect();
+        const scale = Math.min(canvas.width / 1920, canvas.height / 1080);
+        const ox = (canvas.width - 1920 * scale) / 2;
+        const oy = (canvas.height - 1080 * scale) / 2;
+        return { 
+            x: ((e.touches[0].clientX - r.left) * (canvas.width / r.width) - ox) / scale, 
+            y: ((e.touches[0].clientY - r.top) * (canvas.height / r.height) - oy) / scale 
+        };
+    };
+    canvas.addEventListener('touchstart', (e) => {
+        if(!isHolding) return;
+        const pos = getPos(e);
+        activePoint = Object.values(points).find(p => Math.hypot(p.x - pos.x, p.y - pos.y) < 120);
+    });
+    canvas.addEventListener('touchmove', (e) => {
+        if(activePoint) {
+            const pos = getPos(e);
+            activePoint.x = Math.max(0, Math.min(1920, pos.x));
+            activePoint.y = Math.max(0, Math.min(1080, pos.y));
+            e.preventDefault();
+        }
+    }, {passive: false});
+    canvas.addEventListener('touchend', () => activePoint = null);
+}
+
+function toggleRatioUI() {
+    const val = prompt("1pxあたりのmm数を手動入力", mmRatio);
+    if (val !== null && !isNaN(val)) mmRatio = parseFloat(val);
+}
+</script>
 </body>
 </html>
