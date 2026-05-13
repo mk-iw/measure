@@ -4,40 +4,36 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>魚体計測システム - ArUco & Voice</title>
-    <!-- ArUco検知用ライブラリ (非同期読み込み) -->
     <script async src="https://docs.opencv.org/4.5.2/opencv.js" onload="onOpenCvReady();"></script>
     <style>
         body { margin: 0; overflow: hidden; background: #000; font-family: sans-serif; }
         canvas { display: block; width: 100vw; height: 100vh; touch-action: none; }
         
-        /* 上部固定ボタン：右手でメイン操作ができる配置 */
+        /* ボタン位置を固定。下の文字が見えるよう高さを調整 */
         .controls {
-            position: fixed; top: 0; left: 0; width: 100%; height: 80px;
+            position: fixed; top: 0; left: 0; width: 100%; height: 70px;
             display: flex; z-index: 1000; pointer-events: none;
+            background: rgba(0,0,0,0.3);
         }
         button {
-            flex: 1; margin: 5px; font-size: 20px; font-weight: bold;
+            flex: 1; margin: 8px; font-size: 18px; font-weight: bold;
             border-radius: 8px; border: none; pointer-events: auto;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
         }
-        /* 左側：補助機能（調整・キャンセル） */
         #btn-ratio { background: #555; color: white; }
         #btn-cancel { background: #666; color: white; display: none; }
-        /* 右側：メイン操作（ホールド・保存） */
         #btn-hold { background: #2196F3; color: white; }
         #btn-save { background: #ff4444; color: white; display: none; }
 
-        /* ステータス表示 */
         #status-bar {
-            position: fixed; top: 90px; left: 10px; color: yellow;
-            font-size: 14px; background: rgba(0,0,0,0.6); padding: 5px 10px;
+            position: fixed; top: 75px; left: 10px; color: yellow;
+            font-size: 12px; background: rgba(0,0,0,0.6); padding: 4px 8px;
             border-radius: 4px; pointer-events: none; z-index: 1001;
         }
     </style>
 </head>
 <body>
 
-<div id="status-bar">Library: Loading... / Voice: Tap Screen to Start</div>
+<div id="status-bar">Library: Loading...</div>
 
 <div class="controls">
     <button id="btn-ratio" onclick="toggleRatioUI()">倍率調整</button>
@@ -53,8 +49,8 @@
 let currentNo = 1; let tankId = "1"; let mmRatio = 0.400; 
 let isHolding = false; let activePoint = null;
 let cvReady = false;
+let detectedArUcoPoints = []; // マーカー描画用
 
-// OpenCV.js 読み込み完了時
 function onOpenCvReady() {
     cvReady = true;
     updateStatus("Library: OK / Voice: Waiting for Tap");
@@ -91,42 +87,30 @@ window.onload = async () => {
         video.srcObject = s;
         video.play();
         renderLoop();
-    } catch (e) { alert("カメラエラー: " + e.message); }
+    } catch (e) { alert("カメラエラー"); }
     initTouchEvents();
-    
-    // ブラウザ制約（音声開始にはユーザー操作が必要）のため、初回クリック時に起動
     window.addEventListener('click', initVoiceRecognition, { once: true });
 };
 
-// --- 音声認識：ホールド / 保存 / キャンセル に対応 ---
 function initVoiceRecognition() {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-        updateStatus("Voice: Not Supported");
-        return;
-    }
+    if (!SpeechRecognition) return;
     const recognition = new SpeechRecognition();
     recognition.lang = 'ja-JP';
     recognition.continuous = true;
-    
-    recognition.onstart = () => updateStatus(`Library: ${cvReady?'OK':'Wait'} / Voice: ON`);
     recognition.onresult = (event) => {
         const result = event.results[event.results.length - 1][0].transcript;
-        if (result.includes("ホールド") || result.includes("ストップ")) {
-            if (!isHolding) toggleHold(true);
-        } else if (result.includes("保存")) {
-            if (isHolding) finalizeAndSave();
-        } else if (result.includes("キャンセル") || result.includes("リセット")) {
-            if (isHolding) toggleHold(false);
-        }
+        if (result.includes("ホールド") || result.includes("ストップ")) { if (!isHolding) toggleHold(true); }
+        else if (result.includes("保存")) { if (isHolding) finalizeAndSave(); }
+        else if (result.includes("キャンセル") || result.includes("リセット")) { if (isHolding) toggleHold(false); }
     };
-    recognition.onend = () => recognition.start(); // 常にループ
+    recognition.onend = () => recognition.start();
     recognition.start();
 }
 
-// --- ArUco 350mm 自動キャリブレーション ---
 function detectArUcoAndCalibrate() {
     if (!cvReady) return;
+    detectedArUcoPoints = [];
     try {
         let src = cv.imread(lastCapturedFrame);
         let dst = new cv.Mat();
@@ -142,38 +126,31 @@ function detectArUcoAndCalibrate() {
         if (markerIds.rows >= 2) {
             let p1 = markerCorners.get(0).data32F;
             let p2 = markerCorners.get(1).data32F;
-            // マーカー1と2の中心間距離をピクセルで計測
             let c1x = (p1[0]+p1[2]+p1[4]+p1[6])/4; let c1y = (p1[1]+p1[3]+p1[5]+p1[7])/4;
             let c2x = (p2[0]+p2[2]+p2[4]+p2[6])/4; let c2y = (p2[1]+p2[3]+p2[5]+p2[7])/4;
             
+            detectedArUcoPoints = [{x:c1x, y:c1y}, {x:c2x, y:c2y}];
             const pixelDist = Math.hypot(c1x - c2x, c1y - c2y);
-            if (pixelDist > 50) {
-                mmRatio = 350 / pixelDist; // 350mm基準
-                console.log("ArUco Calibrated:", mmRatio);
-            }
+            if (pixelDist > 50) mmRatio = 350 / pixelDist;
         }
         src.delete(); dst.delete(); markerIds.delete(); markerCorners.delete();
-    } catch (e) { console.error("ArUco検知失敗:", e); }
+    } catch (e) { console.error(e); }
 }
 
 function toggleHold(state) {
     isHolding = state;
     if (state) {
         lctx.drawImage(video, 0, 0, 1920, 1080);
-        setTimeout(() => {
-            detectArUcoAndCalibrate(); // ArUco読み込み
-            asyncDetect();             // 魚体検出
-        }, 150);
+        setTimeout(() => { detectArUcoAndCalibrate(); asyncDetect(); }, 150);
+    } else {
+        detectedArUcoPoints = [];
     }
-    
-    // ボタンの表示制御
     document.getElementById('btn-ratio').style.display = !isHolding ? 'block' : 'none';
     document.getElementById('btn-hold').style.display = !isHolding ? 'block' : 'none';
     document.getElementById('btn-cancel').style.display = isHolding ? 'block' : 'none';
     document.getElementById('btn-save').style.display = isHolding ? 'block' : 'none';
 }
 
-// 魚体自動検出（尾先5%の位置に配置）
 async function asyncDetect() {
     const sw = 480, sh = 270;
     offscreen.width = sw; offscreen.height = sh;
@@ -185,21 +162,17 @@ async function asyncDetect() {
     for (let x = 10; x < sw - 10; x++) {
         const i = (Math.floor(scanY) * sw + x) * 4;
         const prevI = (Math.floor(scanY) * sw + (x - 4)) * 4;
-        const diff = Math.abs((data[i]*0.3+data[i+1]*0.6)-(data[prevI]*0.3+data[prevI+1]*0.6));
-        if (diff > 20) {
+        if (Math.abs(data[i] - data[prevI]) > 20) {
             if (x < allMinX) allMinX = x;
             if (x > allMaxX) allMaxX = x;
         }
     }
-
     if (allMaxX > allMinX + 20) {
         const scale = 1920 / sw;
-        points.p1.x = allMinX * scale;
-        points.p2.x = allMaxX * scale; // 尾叉
+        points.p1.x = allMinX * scale; points.p2.x = allMaxX * scale;
         points.p1.y = points.p2.y = 540;
-        
         const fishLen = points.p2.x - points.p1.x;
-        points.p3.x = points.p2.x + (fishLen * 0.05); // 尾先：尾叉の5%右側
+        points.p3.x = points.p2.x + (fishLen * 0.05);
         points.p3.y = 540 + (fishLen * 0.08); 
     }
 }
@@ -217,22 +190,28 @@ function render() {
     ctx.fillStyle = "#000"; ctx.fillRect(0, 0, stageW, stageH);
     ctx.drawImage(isHolding ? lastCapturedFrame : video, ox, oy, 1920 * scale, 1080 * scale);
 
+    // ArUco検知の可視化
+    detectedArUcoPoints.forEach((p, idx) => {
+        ctx.strokeStyle = "cyan"; ctx.lineWidth = 5;
+        ctx.strokeRect(ox + (p.x-30)*scale, oy + (p.y-30)*scale, 60*scale, 60*scale);
+        drawStyledText(`ID:${idx}`, ox + p.x*scale, oy + p.y*scale - 40*scale, 20*scale);
+    });
+
     if (!isHolding) {
         ctx.fillStyle = "rgba(0, 255, 0, 0.15)";
         ctx.fillRect(ox, oy + (540 * scale) - (30 * scale), 1920 * scale, 60 * scale);
     }
     
-    // 文字情報の描画
+    // 測定結果表示（ボタンに隠れないよう少し下に配置：y=140〜）
     const forkPx = Math.hypot(points.p2.x - points.p1.x, points.p2.y - points.p1.y);
     const totalPx = Math.hypot(points.p3.x - points.p1.x, points.p3.y - points.p1.y);
-    const fSize = canvas.height / 25;
-    drawStyledText(`水槽${tankId} No.${String(currentNo).padStart(3, '0')} 尾叉:${(forkPx * mmRatio).toFixed(1)}mm 全長:${(totalPx * mmRatio).toFixed(1)}mm`, 20, 110, fSize);
-    drawStyledText(`Ratio: ${mmRatio.toFixed(4)} (ArUco Mode: 350mm)`, 20, 150, fSize * 0.5);
+    const fSize = canvas.height / 28;
+    drawStyledText(`水槽${tankId} No.${String(currentNo).padStart(3, '0')} 尾叉:${(forkPx * mmRatio).toFixed(1)}mm 全長:${(totalPx * mmRatio).toFixed(1)}mm`, 20, 140, fSize);
+    drawStyledText(`Ratio: ${mmRatio.toFixed(4)} (350mm Mode)`, 20, 180, fSize * 0.6);
 
     Object.values(points).forEach(p => {
         ctx.strokeStyle = "red"; ctx.lineWidth = 4;
         ctx.beginPath(); ctx.arc(ox + p.x * scale, oy + p.y * scale, 15, 0, Math.PI*2); ctx.stroke();
-        drawStyledText(p.label, ox + p.x * scale + 20, oy + p.y * scale - 20, fSize * 0.4);
     });
 }
 
@@ -252,12 +231,12 @@ function finalizeAndSave() {
 function initTouchEvents() {
     const getPos = (e) => {
         const r = canvas.getBoundingClientRect();
-        const scale = Math.min(canvas.width / 1920, canvas.height / 1080);
-        const ox = (canvas.width - 1920 * scale) / 2;
-        const oy = (canvas.height - 1080 * scale) / 2;
+        const sc = Math.min(canvas.width / 1920, canvas.height / 1080);
+        const ox = (canvas.width - 1920 * sc) / 2;
+        const oy = (canvas.height - 1080 * sc) / 2;
         return { 
-            x: ((e.touches[0].clientX - r.left) * (canvas.width / r.width) - ox) / scale, 
-            y: ((e.touches[0].clientY - r.top) * (canvas.height / r.height) - oy) / scale 
+            x: ((e.touches[0].clientX - r.left) * (canvas.width / r.width) - ox) / sc, 
+            y: ((e.touches[0].clientY - r.top) * (canvas.height / r.height) - oy) / sc 
         };
     };
     canvas.addEventListener('touchstart', (e) => {
@@ -277,7 +256,7 @@ function initTouchEvents() {
 }
 
 function toggleRatioUI() {
-    const val = prompt("1pxあたりのmm数を手動入力", mmRatio);
+    const val = prompt("1pxあたりのmm数を入力", mmRatio);
     if (val !== null && !isNaN(val)) mmRatio = parseFloat(val);
 }
 </script>
