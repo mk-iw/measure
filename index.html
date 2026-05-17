@@ -3,12 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>純JavaScript版 全自動ArUco検出テスト</title>
+    <title>純JavaScript版 全自動ArUco検出（バグ修正版）</title>
     <style>
         body { font-family: sans-serif; margin: 0; background: #111; color: #fff; text-align: center; }
         h1 { font-size: 1.2rem; padding: 10px; margin: 0; background: #222; }
         #container { position: relative; width: 100%; max-width: 640px; margin: 0 auto; }
-        video { width: 100%; height: auto; display: block; }
+        video { width: 100%; height: auto; display: block; background: #000; }
         canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
         .controls { padding: 15px; background: #222; }
         label { display: block; margin-bottom: 5px; font-size: 0.9rem; }
@@ -35,23 +35,23 @@
 // 1〜4番を使い回す場合は、ここの数字を自由に変更してください
 // ==========================================
 const CONFIG = {
-    SCALE_IDS: [1, 2],       // スケール用マーカー（20mm想定）
-    ANGLE_ID: 3,             // 角度・姿勢推定用（60mm想定）
+    SCALE_IDS: [1, 2],       // スケール用マーカー
+    ANGLE_ID: 3,             // 角度・姿勢推定用
     REGION_IDS: [4, 40, 41]  // 領域特定用マーカー
 };
 
-// ArUco DICT_4X4_50 のビットパターン辞書（主要な番号を登録）
+// ArUco DICT_4X4_50 のビットパターン辞書
 const ARUCO_DICT = {
     0:  [1,0,1,1, 0,1,0,1, 0,0,1,1, 0,0,1,0],
-    1:  [0,0,0,0, 1,1,1,1, 1,0,0,1, 1,0,1,0], // ←実験用
-    2:  [0,0,1,1, 0,0,1,1, 0,0,1,0, 1,1,0,1], // ←実験用
-    3:  [1,0,0,1, 1,0,0,1, 0,1,0,0, 0,1,1,0], // ←実験用
-    4:  [0,1,0,1, 0,1,0,0, 1,0,0,1, 1,1,1,0], // ←実験用
-    30: [0,1,0,0, 0,1,0,0, 0,0,0,1, 0,1,0,1], // 角度専用（本番用）
-    40: [0,0,0,1, 0,1,1,1, 0,0,0,1, 1,0,0,0], // 左上（本番用）
-    41: [0,0,1,0, 1,0,1,0, 0,0,1,0, 1,0,0,0], // 右上（本番用）
-    42: [0,0,1,1, 0,0,1,0, 1,0,0,0, 1,1,0,0], // 左下（本番用）
-    43: [0,0,1,1, 1,0,0,0, 1,0,1,1, 0,0,1,0]  // 右下（本番用）
+    1:  [0,0,0,0, 1,1,1,1, 1,0,0,1, 1,0,1,0], 
+    2:  [0,0,1,1, 0,0,1,1, 0,0,1,0, 1,1,0,1], 
+    3:  [1,0,0,1, 1,0,0,1, 0,1,0,0, 0,1,1,0], 
+    4:  [0,1,0,1, 0,1,0,0, 1,0,0,1, 1,1,1,0], 
+    30: [0,1,0,0, 0,1,0,0, 0,0,0,1, 0,1,0,1], 
+    40: [0,0,0,1, 0,1,1,1, 0,0,0,1, 1,0,0,0], 
+    41: [0,0,1,0, 1,0,1,0, 0,0,1,0, 1,0,0,0], 
+    42: [0,0,1,1, 0,0,1,0, 1,0,0,0, 1,1,0,0], 
+    43: [0,0,1,1, 1,0,0,0, 1,0,1,1, 0,0,1,0]  
 };
 
 const video = document.getElementById('video');
@@ -66,62 +66,64 @@ slider.oninput = function() {
     sliderVal.innerText = this.value;
 };
 
-// 背面カメラの起動
+// 【カメラ設定の修正】スマホの標準的な16:9のHD解像度をリクエスト
 navigator.mediaDevices.getUserMedia({
-    video: { facingMode: "environment", width: { ideal: 640 }, height: { ideal: 480 } },
+    video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } },
     audio: false
 }).then(stream => {
     video.srcObject = stream;
-    video.requestVideoHighlight = () => { track(); };
+    video.play();
+    // メインループの起動（タイポのあった架空のAPIを削除し、確実なトリガーに変更）
+    video.addEventListener('loadedmetadata', () => {
+        requestAnimationFrame(track);
+    });
+    // フォールバック（念のための即時起動）
     setTimeout(track, 1000);
 }).catch(err => {
-    alert("カメラの起動に失敗しました。ブラウザの権限を確認してください。");
+    alert("カメラの起動に失敗しました: " + err.message);
 });
 
 function track() {
-    if (video.readyState === video.HAVE_CURRENT_DATA) {
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
+    if (video.readyState === video.HAVE_ENOUGH_DATA) {
+        // 表示サイズではなく、カメラの本来の解像度でキャンバスをロック
+        if (canvas.width !== video.videoWidth) {
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+        }
         
-        // 1. カメラ映像をキャンバスに描画
+        // 1. カラー映像を等倍で描画
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         
-        // 2. 画像全体の画素データを取得して解析
+        // 2. 解析用の画像データを取得
         const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         detectMarkers(imgData);
     }
     requestAnimationFrame(track);
 }
 
-// 4x4マーカー自動探索アルゴリズム
 function detectMarkers(imgData) {
     const w = imgData.width;
     const h = imgData.height;
     const data = imgData.data;
     
-    // 訪問済みフラグ（走査の高速化用）
     const visited = new Uint8Array(w * h);
+    const step = 8; // 8ピクセル間隔で粗探索して高速化
     
-    // 粗いグリッドで画面全体から「黒い塊」を自動探索（8ピクセル飛ばし）
-    const step = 8;
     for (let y = step; y < h - step; y += step) {
         for (let x = step; x < w - step; x += step) {
             const idx = (y * w + x);
             if (visited[idx]) continue;
             
-            // 輝度（白黒度）の計算
             const r = data[idx * 4];
             const g = data[idx * 4 + 1];
             const b = data[idx * 4 + 2];
             const gray = 0.299 * r + 0.587 * g + 0.114 * b;
             
-            // しきい値より暗いピクセル（黒枠の候補）を見つけたら
             if (gray < binarizeThreshold) {
-                // その黒い塊の「輪郭（四隅）」をシミュレート抽出
                 const blob = floodFillExtract(x, y, w, h, data, visited);
                 
-                // 一定以上の大きさがあり、かつ四角形らしいもの
-                if (blob && blob.area > 300 && blob.area < (w * h * 0.5)) {
+                // ノイズを弾き、有効なサイズの塊だけを詳細解析
+                if (blob && blob.area > 200 && blob.area < (w * h * 0.5)) {
                     analyzeQuad(blob, imgData);
                 }
             }
@@ -129,24 +131,20 @@ function detectMarkers(imgData) {
     }
 }
 
-// 黒い領域を塗りつぶしながら四隅の極値（頂点）を見つける（高速数理補正用）
 function floodFillExtract(startX, startY, w, h, data, visited) {
     let queue = [[startX, startY]];
     visited[startY * w + startX] = 1;
     
     let count = 0;
-    
-    // 四隅を特定するための4つの幾何極値
-    let minXPlusY = Infinity,  tl = null; // 左上候補 (x+y が最小)
-    let maxXMinusY = -Infinity, tr = null; // 右上候補 (x-y が最大)
-    let maxXPlusY = -Infinity,  br = null; // 右下候補 (x+y が最大)
-    let minXMinusY = Infinity,  bl = null; // 左下候補 (x-y が最小)
+    let minXPlusY = Infinity,  tl = null;
+    let maxXMinusY = -Infinity, tr = null;
+    let maxXPlusY = -Infinity,  br = null;
+    let minXMinusY = Infinity,  bl = null;
     
     while (queue.length > 0) {
         const [cx, cy] = queue.pop();
         count++;
         
-        // 極値の更新（傾いた四角形の4つの頂点をピンポイントで捕まえるトリック）
         const sum = cx + cy;
         const diff = cx - cy;
         if (sum < minXPlusY)  { minXPlusY = sum;  tl = {x: cx, y: cy}; }
@@ -154,7 +152,6 @@ function floodFillExtract(startX, startY, w, h, data, visited) {
         if (sum > maxXPlusY)  { maxXPlusY = sum;  br = {x: cx, y: cy}; }
         if (diff < minXMinusY) { minXMinusY = diff; bl = {x: cx, y: cy}; }
         
-        // 上下左右4方向の探索
         const dirs = [[0,-1], [0,1], [-1,0], [1,0]];
         for (let i = 0; i < 4; i++) {
             const nx = cx + dirs[i][0];
@@ -175,43 +172,39 @@ function floodFillExtract(startX, startY, w, h, data, visited) {
                 }
             }
         }
-        // クラッシュ防止用の安全弁
-        if(count > 15000) break;
+        if(count > 20000) break;
     }
-    
     return { area: count, corners: [tl, tr, br, bl] };
 }
 
-// 四角形候補から6x6のグリッド（外枠+内部4x4ビット）をサンプリングして解析
 function analyzeQuad(blob, imgData) {
     const [tl, tr, br, bl] = blob.corners;
     if (!tl || !tr || !br || !bl) return;
     
-    // バイリニア補間（透視歪み補正）を用いて6x6マスの中心ピクセルをサンプリング
     let grid = [];
     for (let r = 0; r < 6; r++) {
         const v = (r + 0.5) / 6;
         for (let c = 0; c < 6; c++) {
             const u = (c + 0.5) / 6;
             
-            // 上辺と下辺の補間
             const topX = tl.x * (1 - u) + tr.x * u;
             const topY = tl.y * (1 - u) + tr.y * u;
             const botX = bl.x * (1 - u) + br.x * u;
             const botY = bl.y * (1 - u) + br.y * u;
             
-            // 最終的な画像上のサンプリングピクセル座標（歪み補正済）
             const px = Math.round(topX * (1 - v) + botX * v);
             const py = Math.round(topY * (1 - v) + botY * v);
             
-            const idx = (py * imgData.width + px) * 4;
-            const gray = 0.299 * imgData.data[idx] + 0.587 * imgData.data[idx+1] + 0.114 * imgData.data[idx+2];
-            
-            grid.push(gray < binarizeThreshold ? 0 : 1); // 0=黒, 1=白
+            if (px >= 0 && px < imgData.width && py >= 0 && py < imgData.height) {
+                const idx = (py * imgData.width + px) * 4;
+                const gray = 0.299 * imgData.data[idx] + 0.587 * imgData.data[idx+1] + 0.114 * imgData.data[idx+2];
+                grid.push(gray < binarizeThreshold ? 0 : 1);
+            } else {
+                grid.push(1);
+            }
         }
     }
     
-    // 外側の20マスがすべて「黒（0）」であるかチェック（ArUcoの黒枠基準）
     let borderCount = 0;
     for (let r = 0; r < 6; r++) {
         for (let c = 0; c < 6; c++) {
@@ -220,9 +213,8 @@ function analyzeQuad(blob, imgData) {
             }
         }
     }
-    if (borderCount < 16) return; // 外枠が黒くないものはノイズとして即排除
+    if (borderCount < 14) return; // スマホのパース歪みを考慮し、黒枠判定を少し緩和（16→14）
     
-    // 内側の4x4ビットを抽出
     let bits4x4 = [];
     for (let r = 1; r < 5; r++) {
         for (let c = 1; c < 5; c++) {
@@ -230,34 +222,30 @@ function analyzeQuad(blob, imgData) {
         }
     }
     
-    // 辞書と照合（4つの回転パターンすべてを検証）
     const match = matchDictionary(bits4x4);
     if (match) {
-        // マーカーの役割に応じた画面表示の色分け
-        let color = "#ff0000"; // デフォルト赤
+        let color = "#ff0000";
         let role = "未定義";
         
         if (CONFIG.SCALE_IDS.includes(match.id)) { color = "#00ff00"; role = "スケール"; }
         else if (CONFIG.ANGLE_ID === match.id) { color = "#00ffff"; role = "角度測定"; }
         else if (CONFIG.REGION_IDS.includes(match.id)) { color = "#ffff00"; role = "領域特定"; }
         
-        // 画面上に認識結果をビジュアル描画（自動追従枠）
+        // オーバーレイの枠線描画
         ctx.strokeStyle = color;
-        ctx.lineWidth = 3;
+        ctx.lineWidth = 4;
         ctx.beginPath();
         ctx.moveTo(tl.x, tl.y); ctx.lineTo(tr.x, tr.y);
         ctx.lineTo(br.x, br.y); ctx.lineTo(bl.x, bl.y);
         ctx.closePath();
         ctx.stroke();
         
-        // 基準点（左上）にIDと役割のテキストを浮き上がらせる
         ctx.fillStyle = color;
-        ctx.font = "bold 16px sans-serif";
-        ctx.fillText(`ID: ${match.id} [${role}]`, tl.x, tl.y - 10);
+        ctx.font = "bold 20px sans-serif";
+        ctx.fillText(`ID: ${match.id} [${role}]`, tl.x, tl.y - 12);
     }
 }
 
-// 4方向の回転を考慮した辞書照合関数
 function matchDictionary(bits) {
     for (let id in ARUCO_DICT) {
         let dictBits = ARUCO_DICT[id];
@@ -269,13 +257,12 @@ function matchDictionary(bits) {
                 if (currentBits[i] !== dictBits[i]) { isMatch = false; break; }
             }
             if (isMatch) return { id: parseInt(id, 10), rotation: rot };
-            currentBits = rotate4x4(currentBits); // 90度回転させて再チェック
+            currentBits = rotate4x4(currentBits);
         }
     }
     return null;
 }
 
-// 4x4配列を時計回りに90度回転させる関数
 function rotate4x4(b) {
     let r = new Array(16);
     for (let y = 0; y < 4; y++) {
