@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ArUco環境検証テスト</title>
-    <script async src="https://docs.opencv.org/4.5.2/opencv.js" onload="onCvReady();"></script>
+    <title>4x4 ArUco環境検証テスト</title>
+    <script src="https://raw.githack.com/AR-js-org/AR.js/master/three.js/vendor/jsartoolkit5/build/artoolkit.min.js"></script>
     <style>
         body { margin: 0; background: #111; color: #fff; font-family: sans-serif; text-align: center; }
         #info { background: #222; padding: 15px; font-size: 16px; border-bottom: 2px solid #444; }
@@ -17,29 +17,34 @@
 
 <div id="info">
     【ステータス】<br>
-    OpenCV.js: <span id="status-cv" style="color:red; font-weight:bold;">Loading...</span><br>
-    検知されたマーカー数: <span id="status-count" style="color:yellow; font-size:20px; font-weight:bold;">0 個</span>
+    ARエンジン: <span id="status-lib" style="color:red; font-weight:bold;">Loading...</span><br>
+    検知された4x4マーカー数: <span id="status-count" style="color:yellow; font-size:24px; font-weight:bold;">0 個</span>
 </div>
 
-<button class="btn" onclick="runSingleTest()">このコマで検知テストを実行</button>
+<button class="btn" onclick="runSingleTest()">このコマで4x4検知テストを実行</button>
 
 <p>【1. カメラ生映像】</p>
 <video id="video" playsinline></video>
 
-<p>【2. OpenCV解析直後の映像（成否チェック用）】</p>
+<p>【2. 解析結果（成功なら青枠を表示）】</p>
 <canvas id="canvas-out"></canvas>
 
 <script>
-let cvReady = false;
 const video = document.getElementById('video');
 const canvas = document.getElementById('canvas-out');
 const ctx = canvas.getContext('2d');
+let arController = null;
+let isLibReady = false;
 
-function onCvReady() {
-    cvReady = true;
-    document.getElementById('status-cv').innerText = "OK (動作可能)";
-    document.getElementById('status-cv').style.color = "lightgreen";
-}
+// ライブラリの読み込み完了を監視
+const checkLib = setInterval(() => {
+    if (typeof ARController !== 'undefined') {
+        clearInterval(checkLib);
+        isLibReady = true;
+        document.getElementById('status-lib').innerText = "OK (4x4対応エンジン起動)";
+        document.getElementById('status-lib').style.color = "lightgreen";
+    }
+}, 100);
 
 window.onload = async () => {
     try {
@@ -55,7 +60,6 @@ window.onload = async () => {
                     canvas.width = video.videoWidth;
                     canvas.height = video.videoHeight;
                 }
-                // テスト実行中以外は、下のCanvasに生映像を同期
                 if (!window.isTesting) {
                     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
                 }
@@ -69,81 +73,65 @@ window.onload = async () => {
 };
 
 function runSingleTest() {
-    if (!cvReady) { alert("ライブラリの読み込みが完了していません。"); return; }
-    
+    if (!isLibReady) { alert("ARエンジンがまだ読み込まれていません。"); return; }
     window.isTesting = true;
     
-    // 現在の撮影コマをCanvasに確定描画
+    // 現在の映像の1コマを確実にCanvasに固定
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    let imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    
-    // OpenCVのメモリ管理オブジェクト
-    let srcRGBA = new cv.Mat();
-    let srcRGB = new cv.Mat();
-    let markerIds = new cv.Mat();
-    let markerCorners = new cv.MatVector();
     
     try {
-        // 1. 生のRGBAデータをOpenCVにロード
-        cv.matFromImageData(imgData, srcRGBA);
+        // 初回実行時のみ、カメラ解像度に合わせてARコントローラを初期化
+        if (!arController) {
+            arController = new ARController(canvas.width, canvas.height, null);
+            // マーカーのパターン検知モードを「正方形のバーコード（ArUco等）モード」に設定
+            arController.setPatternDetectionMode(artoolkit.AR_MATRIX_CODE_DETECTION);
+            // マーカーの規格を「4x4のバーコード（DICT_4X4_50相当）」に厳密に指定
+            arController.setMatrixCodeType(artoolkit.AR_MATRIX_CODE_4x4);
+        }
+
+        // コントローラにCanvas要素を渡して、4x4マーカーの解析を実行
+        arController.detectMarker(canvas);
         
-        // 2. 検出用にRGB（3チャンネル）の別オブジェクトを作成して変換
-        cv.cvtColor(srcRGBA, srcRGB, cv.COLOR_RGBA2RGB, 0);
-
-        let dictionary = cv.getPredefinedDictionary(cv.DICT_4X4_50);
-        let parameter = new cv.DetectorParameters();
-
-        // 3. 検出処理（純粋にメモリ内だけで実行）
-        cv.detectMarkers(srcRGB, dictionary, markerCorners, markerIds, parameter);
-
-        // 4. 安全に件数を取得（C++側の空のMatバグを完全回避）
-        const count = markerIds.rows;
+        // 検出されたマーカーの総数を安全に取得
+        const count = arController.getMarkerNum();
         document.getElementById('status-count').innerText = `${count} 個`;
-
-        // 5. 描画処理（クラッシュのリスクがあるcv関数を排除し、安全なimshowと標準Canvasで描画）
-        cv.imshow('canvas-out', srcRGBA); // 4チャンネルのままだから絶対に落ちない
 
         if (count > 0) {
             document.getElementById('status-count').style.color = "lightgreen";
             
-            // 検出された角の座標をもとに、JavaScript標準のctxで枠を描画
+            // 検出されたすべてのマーカーの位置（四隅の座標）をループ処理
             for (let i = 0; i < count; i++) {
-                let corners = markerCorners.get(i); // これが4点の座標を持つMat
-                // OpenCV.jsの安全なデータアクセス（ptrメソッド）を使用
-                let x0 = corners.data32F[0], y0 = corners.data32F[1];
-                let x1 = corners.data32F[2], y1 = corners.data32F[3];
-                let x2 = corners.data32F[4], y2 = corners.data32F[5];
-                let x3 = corners.data32F[6], y3 = corners.data32F[7];
-
-                // 標準のCanvas APIで青い枠線を描画（絶対にエラーにならない）
+                let markerInfo = arController.getMarker(i);
+                
+                // AR.jsの内部仕様に基づき、中心点と外枠の相対位置から正確な四隅のピクセル座標を算出
+                let vertex = markerInfo.vertex; // [x, y] の二次元配列が4点格納されている
+                
+                // 標準Canvas APIで、メモリ違反を起こさずに安全に青枠を描画
                 ctx.strokeStyle = "#00ffff";
                 ctx.lineWidth = 6;
                 ctx.beginPath();
-                ctx.moveTo(x0, y0);
-                ctx.lineTo(x1, y1);
-                ctx.lineTo(x2, y2);
-                ctx.lineTo(x3, y3);
+                ctx.moveTo(vertex[0][0], vertex[0][1]);
+                ctx.lineTo(vertex[1][0], vertex[1][1]);
+                ctx.lineTo(vertex[2][0], vertex[2][1]);
+                ctx.lineTo(vertex[3][0], vertex[3][1]);
                 ctx.closePath();
                 ctx.stroke();
                 
-                // IDテキストの描画
+                // マーカーに割り当てられたマトリックスIDを赤文字で描画
                 ctx.fillStyle = "red";
-                ctx.font = "bold 30px sans-serif";
-                let id = markerIds.data32S[i];
-                ctx.fillText(`ID:${id}`, x0, y0 - 10);
+                ctx.font = "bold 35px sans-serif";
+                ctx.fillText(`ID:${markerInfo.idMatrix}`, vertex[0][0], vertex[0][1] - 15);
             }
+            alert(`正常に解析完了：4x4マーカーが ${count} 個 検知されました。`);
         } else {
             document.getElementById('status-count').style.color = "red";
-            alert("解析は正常終了（エラーなし）しましたが、マーカーは1個も検出されませんでした。");
+            alert("解析は正常に完了しましたが、4x4マーカーは検出されませんでした。");
         }
 
     } catch (error) {
-        alert("内部解析エラー発生: " + error.message);
+        alert("エラーが発生しました: " + error.message);
     } finally {
-        // メモリ解放の徹底
-        srcRGBA.delete(); srcRGB.delete(); markerIds.delete(); markerCorners.delete();
-        // 1秒後に次のテストを入力を受付可能にする
-        setTimeout(() => { window.isTesting = false; }, 1000);
+        setTimeout(() => { window.isTesting = false; }, 500);
     }
 }
 </script>
