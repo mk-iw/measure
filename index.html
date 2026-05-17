@@ -55,8 +55,10 @@ window.onload = async () => {
                     canvas.width = video.videoWidth;
                     canvas.height = video.videoHeight;
                 }
-                // ボタンを押すまでは、下のCanvasにも生映像をそのまま流す
-                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                // テスト実行前は生映像を流す
+                if (!window.isTesting) {
+                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                }
             }
             requestAnimationFrame(drawLoop);
         }
@@ -69,25 +71,26 @@ window.onload = async () => {
 function runSingleTest() {
     if (!cvReady) { alert("ライブラリの読み込みが完了していません。"); return; }
     
-    // テスト実行時の1コマを固定描画
+    window.isTesting = true;
+    
+    // 現在の1コマをCanvasにガッチリ固定
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     let imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     
-    // OpenCVのメモリ管理オブジェクト
+    // メモリ確保
     let src = new cv.Mat();
     let dst = new cv.Mat();
     let markerIds = new cv.Mat();
     let markerCorners = new cv.MatVector();
     
     try {
-        // 【バグ修正1】スマホ環境でクラッシュしないよう、第一引数に空のMat（src）を明示的に渡して初期化
         cv.matFromImageData(imgData, src);
         cv.cvtColor(src, dst, cv.COLOR_RGBA2RGB, 0);
 
         let dictionary = cv.getPredefinedDictionary(cv.DICT_4X4_50);
         let parameter = new cv.DetectorParameters();
 
-        // 検出処理を実行
+        // 検出処理
         cv.detectMarkers(dst, dictionary, markerCorners, markerIds, parameter);
 
         const count = markerIds.rows;
@@ -96,39 +99,26 @@ function runSingleTest() {
         if (count > 0) {
             document.getElementById('status-count').style.color = "lightgreen";
             
-            // 検知した位置にCanvas上で枠を描画
-            for (let i = 0; i < count; i++) {
-                // 【バグ修正2】iOS/Androidでのメモリ参照エラーを防ぐため、正式なメソッド経由で座標を抽出
-                let mat = markerCorners.get(i);
-                let x0 = mat.data32F[0], y0 = mat.data32F[1];
-                let x1 = mat.data32F[2], y1 = mat.data32F[3];
-                let x2 = mat.data32F[4], y2 = mat.data32F[5];
-                let x3 = mat.data32F[6], y3 = mat.data32F[7];
-
-                ctx.strokeStyle = "#00ffff";
-                ctx.lineWidth = 6;
-                ctx.beginPath();
-                ctx.moveTo(x0, y0);
-                ctx.lineTo(x1, y1);
-                ctx.lineTo(x2, y2);
-                ctx.lineTo(x3, y3);
-                ctx.closePath();
-                ctx.stroke();
-                
-                ctx.fillStyle = "red";
-                ctx.font = "bold 30px sans-serif";
-                ctx.fillText(`ID:${markerIds.data32S[i]}`, x0, y0 - 10);
-            }
+            // 【バグ根本修正】手動の座標計算をすべて廃止。
+            // OpenCVの標準関数を使い、Mat（dst）に対して直接公式の枠線とIDを描き込む
+            cv.drawDetectedMarkers(dst, markerCorners, markerIds, new cv.Scalar(0, 255, 255)); // 黄色（または青）で枠描画
+            
+            // 枠が描き込まれたMatデータを再びCanvasに戻して表示
+            cv.imshow('canvas-out', dst);
         } else {
             document.getElementById('status-count').style.color = "red";
-            alert("マーカーが検出されませんでした。画角や距離を変えてもう一度お試しください。");
+            // 検出ゼロでも、解析自体は正常終了したことを示すために、撮影したコマをそのまま表示
+            cv.imshow('canvas-out', dst);
+            alert("解析は正常に完了しましたが、マーカーが1個も検出されませんでした。");
         }
 
     } catch (error) {
         alert("内部解析エラー発生: " + error.message);
     } finally {
-        // メモリリーク防止のため、エラーの有無に関わらず確実にメモリを解放
+        // メモリ解放
         src.delete(); dst.delete(); markerIds.delete(); markerCorners.delete();
+        // 次の撮影を可能にするためにフラグを戻す
+        setTimeout(() => { window.isTesting = false; }, 1000);
     }
 }
 </script>
