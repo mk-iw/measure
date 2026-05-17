@@ -45,6 +45,7 @@ let isHolding = false; let activePoint = null;
 let cvReady = false;
 let detectedArUcoPoints = [];
 let testDisplayTimer = null;
+let arucoStatusText = "ArUco: Ready"; // マーカーの検知状態メッセージ
 
 function onOpenCvReady() {
     cvReady = true;
@@ -98,9 +99,10 @@ function initVoiceRecognition() {
     recognition.start();
 }
 
-// iPhoneのカメラ回転を補正してArUcoを検出するコアロジック
+// iPhoneのカメラ回転に対応し、1個ずつの検知数も精密にチェックするコアロジック
 function processArUcoDetection(imageSource) {
     if (!cvReady) return false;
+    detectedArUcoPoints = [];
     
     let tempCanvas = document.createElement('canvas');
     tempCanvas.width = 1920; tempCanvas.height = 1080;
@@ -111,65 +113,67 @@ function processArUcoDetection(imageSource) {
         let dst = new cv.Mat();
         cv.cvtColor(src, dst, cv.COLOR_RGBA2RGB, 0);
 
-        // 【iOS対策】縦横の回転耐性を上げるため、画像を正しい向きに直立させる（必要に応じて90度回転して検査）
         let markerIds = new cv.Mat();
         let markerCorners = new cv.MatVector();
         let dictionary = cv.getPredefinedDictionary(cv.DICT_4X4_50);
         let parameter = new cv.DetectorParameters();
 
-        // 1回目の検出（通常向き）
+        // 1回目：通常向きで検出
         cv.detectMarkers(dst, dictionary, markerCorners, markerIds, parameter);
 
-        // 検出できなかった場合、画像を回転させて再トライ（iPhone Safariの映像向き対策）
-        if (markerIds.rows < 2) {
+        // 2回目：iPhone Safari特有の横倒し映像対策（見つからなかった場合のみ回転させて再検出）
+        let isRotated = false;
+        if (markerIds.rows === 0) {
             let rotated = new cv.Mat();
             cv.rotate(dst, rotated, cv.ROTATE_90_CLOCKWISE);
             cv.detectMarkers(rotated, dictionary, markerCorners, markerIds, parameter);
-            
-            // 回転して見つかった場合は、座標を元の1920x1080系に逆変換
-            if (markerIds.rows >= 2) {
-                detectedArUcoPoints = [];
-                let centers = [];
-                for (let i = 0; i < markerIds.rows; i++) {
-                    let corners = markerCorners.get(i).data32F;
-                    let rx = (corners[0] + corners[2] + corners[4] + corners[6]) / 4;
-                    let ry = (corners[1] + corners[3] + corners[5] + corners[7]) / 4;
-                    // 90度回転から元に戻す計算
-                    let cx = ry;
-                    let cy = 1080 - rx;
-                    centers.push({x: cx, y: cy});
-                    detectedArUcoPoints.push({x: cx, y: cy});
-                }
-                const pixelDist = Math.hypot(centers[0].x - centers[1].x, centers[0].y - centers[1].y);
-                if (pixelDist > 50) mmRatio = 350 / pixelDist;
-                rotated.delete(); src.delete(); dst.delete(); markerIds.delete(); markerCorners.delete();
-                return true;
-            }
+            isRotated = true;
             rotated.delete();
         }
 
-        // 通常向きで見つかった場合の処理
-        let success = false;
-        if (markerIds.rows >= 2) {
+        const totalFound = markerIds.rows;
+
+        if (totalFound > 0) {
             let centers = [];
-            detectedArUcoPoints = [];
-            for (let i = 0; i < markerIds.rows; i++) {
+            for (let i = 0; i < totalFound; i++) {
                 let corners = markerCorners.get(i).data32F;
-                let cx = (corners[0] + corners[2] + corners[4] + corners[6]) / 4;
-                let cy = (corners[1] + corners[3] + corners[5] + corners[7]) / 4;
+                let rx = (corners[0] + corners[2] + corners[4] + corners[6]) / 4;
+                let ry = (corners[1] + corners[3] + corners[5] + corners[7]) / 4;
+                
+                let cx, cy;
+                if (isRotated) {
+                    cx = ry;
+                    cy = 1080 - rx;
+                } else {
+                    cx = rx;
+                    cy = ry;
+                }
                 centers.push({x: cx, y: cy});
-                detectedArUcoPoints.push({x: cx, y: cy});
+                detectedArUcoPoints.push({x: cx, y: cy}); // 1つでも見つかれば描画用配列に格納
             }
-            const pixelDist = Math.hypot(centers[0].x - centers[1].x, centers[0].y - centers[1].y);
-            if (pixelDist > 50) {
-                mmRatio = 350 / pixelDist;
-                success = true;
+
+            // 2つ以上ある場合のみ倍率を更新
+            if (totalFound >= 2) {
+                const pixelDist = Math.hypot(centers[0].x - centers[1].x, centers[0].y - centers[1].y);
+                if (pixelDist > 50) {
+                    mmRatio = 350 / pixelDist;
+                    arucoStatusText = `ArUco OK: ${mmRatio.toFixed(4)} mm/px`;
+                    src.delete(); dst.delete(); markerIds.delete(); markerCorners.delete();
+                    return true;
+                }
+            } else {
+                // 【新規】1個だけ見つかった場合の判別用テキスト
+                arucoStatusText = `マーカーを1個検知 (距離計算には2個必要です)`;
             }
+        } else {
+            arucoStatusText = `マーカーが見つかりません`;
         }
+
         src.delete(); dst.delete(); markerIds.delete(); markerCorners.delete();
-        return success;
+        return false;
     } catch (e) { 
         console.error("ArUco分析エラー:", e); 
+        arucoStatusText = `検知エラーが発生しました`;
         return false;
     }
 }
@@ -181,14 +185,18 @@ function detectArUcoAndCalibrate() {
 function testArUcoNow() {
     if (!cvReady) { alert("ライブラリがまだ読み込まれていません。"); return; }
     clearTimeout(testDisplayTimer);
-    const isSuccess = processArUcoDetection(video);
-    if (isSuccess) {
+    processArUcoDetection(video);
+    
+    // テスト時は結果を分かりやすくダイアログかタイマー消去で明示
+    if (detectedArUcoPoints.length > 0) {
         testDisplayTimer = setTimeout(() => {
-            if (!isHolding) detectedArUcoPoints = [];
-        }, 3000);
+            if (!isHolding) {
+                detectedArUcoPoints = [];
+                arucoStatusText = "ArUco: Ready";
+            }
+        }, 4000);
     } else {
-        alert("マーカーを2つ同時に認識できませんでした。カメラの向きを少し変えるか、余白を確認してください。");
-        detectedArUcoPoints = [];
+        alert("マーカーが1つも見つかりません。カメラの距離、ピント、マーカー外側の白い余白を確認してください。");
     }
 }
 
@@ -200,6 +208,7 @@ function toggleHold(state) {
         setTimeout(() => { detectArUcoAndCalibrate(); asyncDetect(); }, 150);
     } else {
         detectedArUcoPoints = [];
+        arucoStatusText = "ArUco: Ready";
     }
     document.getElementById('btn-ratio').style.display = !isHolding ? 'block' : 'none';
     document.getElementById('btn-test').style.display = !isHolding ? 'block' : 'none';
@@ -247,7 +256,7 @@ function render() {
     ctx.fillStyle = "#000"; ctx.fillRect(0, 0, stageW, stageH);
     ctx.drawImage(isHolding ? lastCapturedFrame : video, ox, oy, 1920 * scale, 1080 * scale);
 
-    // 青い枠でArUcoを可視化
+    // 【チェック機能】1つでも検知されていれば画面上に青い枠をしっかり描画する
     detectedArUcoPoints.forEach((p, idx) => {
         ctx.strokeStyle = "#00ffff"; ctx.lineWidth = 5;
         ctx.strokeRect(ox + (p.x-40)*scale, oy + (p.y-40)*scale, 80*scale, 80*scale);
@@ -259,17 +268,16 @@ function render() {
         ctx.fillRect(ox, oy + (540 * scale) - (30 * scale), 1920 * scale, 60 * scale);
     }
     
-    // 【文字被り完全修正】固定数値ではなく、実際のCanvas描画全体の高さ（stageH）を基準に「下から350px、300px上」に強制配置
     const forkPx = Math.hypot(points.p2.x - points.p1.x, points.p2.y - points.p1.y);
     const totalPx = Math.hypot(points.p3.x - points.p1.x, points.p3.y - points.p1.y);
     const fSize = canvas.height / 25;
     
-    // iPhoneのRetina高解像度に対応した位置計算
     const textY1 = stageH - 350;
     const textY2 = stageH - 280;
     
     drawStyledText(`水槽${tankId} No.${String(currentNo).padStart(3, '0')} 尾叉:${(forkPx * mmRatio).toFixed(1)}mm 全長:${(totalPx * mmRatio).toFixed(1)}mm`, 40, textY1, fSize);
-    drawStyledText(`Ratio: ${mmRatio.toFixed(4)} (ArUco 350mm Mode)`, 40, textY2, fSize * 0.5);
+    // マーカーのチェック状態（1個検出中なのか、0個なのか）をリアルタイムに表示
+    drawStyledText(`Ratio: ${mmRatio.toFixed(4)} | Status: ${arucoStatusText}`, 40, textY2, fSize * 0.5);
 
     Object.values(points).forEach(p => {
         ctx.strokeStyle = "red"; ctx.lineWidth = 4;
@@ -285,7 +293,6 @@ function render() {
 function drawMagnifier(ox, oy, scale, sourceImg) {
     const mag = 3;
     const winW = 450, winH = 250;
-    // 拡大鏡の位置を画面中央やや上に配置して文字やボタンとの重複を回避
     const tx = (canvas.width - winW) / 2, ty = 140; 
     ctx.save();
     ctx.strokeStyle = "yellow"; ctx.lineWidth = 4;
