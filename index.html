@@ -9,19 +9,21 @@
         body { margin: 0; overflow: hidden; background: #000; font-family: sans-serif; }
         canvas { display: block; width: 100vw; height: 100vh; touch-action: none; }
         
-        /* 牧平さんの指定通りの上部50%分割ボタンレイアウト */
+        /* 上部ボタンレイアウト：テストボタン追加に伴い左側を2分割 */
         .controls {
             position: fixed; top: 0; left: 0; width: 100%; height: 80px;
             display: flex; z-index: 1000; pointer-events: none;
         }
         button {
-            flex: 1; margin: 5px; font-size: 20px; font-weight: bold;
+            flex: 1; margin: 5px; font-size: 18px; font-weight: bold;
             border-radius: 8px; border: none; pointer-events: auto;
             box-shadow: 0 4px 6px rgba(0,0,0,0.3);
         }
-        /* 左側：サブ操作 */
+        /* 左側・中央：サブ操作・テスト */
         #btn-ratio { background: #555; color: white; }
+        #btn-test { background: #009688; color: white; } /* ArUcoテスト用ボタン */
         #btn-cancel { background: #666; color: white; display: none; }
+        
         /* 右側：メイン操作（右手最適化） */
         #btn-hold { background: #2196F3; color: white; }
         #btn-save { background: #ff4444; color: white; display: none; }
@@ -31,6 +33,7 @@
 
 <div class="controls">
     <button id="btn-ratio" onclick="toggleRatioUI()">倍率調整</button>
+    <button id="btn-test" onclick="testArUcoNow()">ArUcoテスト</button>
     <button id="btn-cancel" onclick="toggleHold(false)">キャンセル</button>
     <button id="btn-hold" onclick="toggleHold(true)">ホールド</button>
     <button id="btn-save" onclick="finalizeAndSave()">保存</button>
@@ -44,6 +47,7 @@ let currentNo = 1; let tankId = "1"; let mmRatio = 0.400;
 let isHolding = false; let activePoint = null;
 let cvReady = false;
 let detectedArUcoPoints = [];
+let testDisplayTimer = null; // テスト表示を一定時間で消すためのタイマー
 
 function onOpenCvReady() {
     cvReady = true;
@@ -97,11 +101,16 @@ function initVoiceRecognition() {
     recognition.start();
 }
 
-function detectArUcoAndCalibrate() {
-    if (!cvReady) return;
-    detectedArUcoPoints = [];
+// 共通のArUco検出コアロジック（引数に解析したい光源ソースを渡す）
+function processArUcoDetection(imageSource) {
+    if (!cvReady) return false;
+    
+    let tempCanvas = document.createElement('canvas');
+    tempCanvas.width = 1920; tempCanvas.height = 1080;
+    tempCanvas.getContext('2d').drawImage(imageSource, 0, 0, 1920, 1080);
+
     try {
-        let src = cv.imread(lastCapturedFrame);
+        let src = cv.imread(tempCanvas);
         let dst = new cv.Mat();
         cv.cvtColor(src, dst, cv.COLOR_RGBA2RGB, 0);
 
@@ -113,8 +122,10 @@ function detectArUcoAndCalibrate() {
 
         cv.detectMarkers(dst, dictionary, markerCorners, markerIds, parameter);
 
+        let success = false;
         if (markerIds.rows >= 2) {
             let centers = [];
+            detectedArUcoPoints = [];
             for (let i = 0; i < markerIds.rows; i++) {
                 let corners = markerCorners.get(i).data32F;
                 let cx = (corners[0] + corners[2] + corners[4] + corners[6]) / 4;
@@ -126,21 +137,51 @@ function detectArUcoAndCalibrate() {
             const pixelDist = Math.hypot(centers[0].x - centers[1].x, centers[0].y - centers[1].y);
             if (pixelDist > 50) {
                 mmRatio = 350 / pixelDist;
+                success = true;
             }
         }
         src.delete(); dst.delete(); markerIds.delete(); markerCorners.delete();
-    } catch (e) { console.error("ArUco分析エラー:", e); }
+        return success;
+    } catch (e) { 
+        console.error("ArUco分析エラー:", e); 
+        return false;
+    }
+}
+
+function detectArUcoAndCalibrate() {
+    processArUcoDetection(lastCapturedFrame);
+}
+
+// 【新機能】ライブ映像からその場でArUcoをテスト検知する
+function testArUcoNow() {
+    if (!cvReady) { alert("ライブラリがまだ読み込まれていません。"); return; }
+    clearTimeout(testDisplayTimer);
+    
+    const isSuccess = processArUcoDetection(video);
+    if (isSuccess) {
+        // 検知できたら3秒間画面に青枠を維持して、その後自動で消す
+        testDisplayTimer = setTimeout(() => {
+            if (!isHolding) detectedArUcoPoints = [];
+        }, 3000);
+    } else {
+        alert("マーカーを2つ同時に認識できませんでした。ピントや画角、余白を確認してください。");
+        detectedArUcoPoints = [];
+    }
 }
 
 function toggleHold(state) {
     isHolding = state;
+    clearTimeout(testDisplayTimer);
     if (state) {
         lctx.drawImage(video, 0, 0, 1920, 1080);
         setTimeout(() => { detectArUcoAndCalibrate(); asyncDetect(); }, 150);
     } else {
         detectedArUcoPoints = [];
     }
+    
+    // ボタンの表示制御
     document.getElementById('btn-ratio').style.display = !isHolding ? 'block' : 'none';
+    document.getElementById('btn-test').style.display = !isHolding ? 'block' : 'none'; // テストボタンも同期
     document.getElementById('btn-hold').style.display = !isHolding ? 'block' : 'none';
     document.getElementById('btn-cancel').style.display = isHolding ? 'block' : 'none';
     document.getElementById('btn-save').style.display = isHolding ? 'block' : 'none';
@@ -197,12 +238,12 @@ function render() {
         ctx.fillRect(ox, oy + (540 * scale) - (30 * scale), 1920 * scale, 60 * scale);
     }
     
-    // 【修正】文字被り防止：ボタン（高さ80px）から十分に離した y=160, 210 に配置
+    // 【修正】文字被りの絶対防止：y座標を「240」と「290」まで下げ、大きなボタン(高さ80px)との距離を完全に離しました
     const forkPx = Math.hypot(points.p2.x - points.p1.x, points.p2.y - points.p1.y);
     const totalPx = Math.hypot(points.p3.x - points.p1.x, points.p3.y - points.p1.y);
     const fSize = canvas.height / 25;
-    drawStyledText(`水槽${tankId} No.${String(currentNo).padStart(3, '0')} 尾叉:${(forkPx * mmRatio).toFixed(1)}mm 全長:${(totalPx * mmRatio).toFixed(1)}mm`, 20, 160, fSize);
-    drawStyledText(`Ratio: ${mmRatio.toFixed(4)} (ArUco 350mm Mode)`, 20, 210, fSize * 0.5);
+    drawStyledText(`水槽${tankId} No.${String(currentNo).padStart(3, '0')} 尾叉:${(forkPx * mmRatio).toFixed(1)}mm 全長:${(totalPx * mmRatio).toFixed(1)}mm`, 20, 240, fSize);
+    drawStyledText(`Ratio: ${mmRatio.toFixed(4)} (ArUco 350mm Mode)`, 20, 290, fSize * 0.5);
 
     Object.values(points).forEach(p => {
         ctx.strokeStyle = "red"; ctx.lineWidth = 4;
@@ -210,17 +251,15 @@ function render() {
         drawStyledText(p.label, ox + p.x * scale + 20, oy + p.y * scale - 20, fSize * 0.4);
     });
 
-    // 【復元】ドラッグ調整時の拡大鏡表示
     if (activePoint && isHolding) {
-        drawMagnifier(ox, oy, scale, isHolding ? lastCapturedFrame : video);
+        drawMagnifier(ox, oy, scale, lastCapturedFrame);
     }
 }
 
-// 【復元】拡大画面描画処理
 function drawMagnifier(ox, oy, scale, sourceImg) {
     const mag = 3;
     const winW = 450, winH = 250;
-    const tx = (canvas.width - winW) / 2, ty = 250; // テキストとも被らない位置に調整
+    const tx = (canvas.width - winW) / 2, ty = 340; // 文字の下に配置して被りを防止
     ctx.save();
     ctx.strokeStyle = "yellow"; ctx.lineWidth = 4;
     ctx.strokeRect(tx, ty, winW, winH);
