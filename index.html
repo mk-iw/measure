@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>4x4 ArUco環境検証テスト</title>
-    <script src="https://raw.githack.com/AR-js-org/AR.js/master/three.js/vendor/jsartoolkit5/build/artoolkit.min.js"></script>
+    <title>4x4 ArUco環境検証テスト（読み込み修正版）</title>
+    <script src="https://raw.githack.com/AR-js-org/AR.js/master/three.js/vendor/jsartoolkit5/build/artoolkit.min.js" onload="onLibReady();"></script>
     <style>
         body { margin: 0; background: #111; color: #fff; font-family: sans-serif; text-align: center; }
         #info { background: #222; padding: 15px; font-size: 16px; border-bottom: 2px solid #444; }
@@ -26,7 +26,7 @@
 <p>【1. カメラ生映像】</p>
 <video id="video" playsinline></video>
 
-<p>【2. 解析結果（成功なら青枠を表示）】</p>
+<p>【2. 解析結果】</p>
 <canvas id="canvas-out"></canvas>
 
 <script>
@@ -36,15 +36,12 @@ const ctx = canvas.getContext('2d');
 let arController = null;
 let isLibReady = false;
 
-// ライブラリの読み込み完了を監視
-const checkLib = setInterval(() => {
-    if (typeof ARController !== 'undefined') {
-        clearInterval(checkLib);
-        isLibReady = true;
-        document.getElementById('status-lib').innerText = "OK (4x4対応エンジン起動)";
-        document.getElementById('status-lib').style.color = "lightgreen";
-    }
-}, 100);
+// ブラウザの負荷ゼロで、ライブラリの準備が整った瞬間を1回だけ検知する関数
+function onLibReady() {
+    isLibReady = true;
+    document.getElementById('status-lib').innerText = "OK (4x4対応エンジン起動)";
+    document.getElementById('status-lib').style.color = "lightgreen";
+}
 
 window.onload = async () => {
     try {
@@ -76,37 +73,27 @@ function runSingleTest() {
     if (!isLibReady) { alert("ARエンジンがまだ読み込まれていません。"); return; }
     window.isTesting = true;
     
-    // 現在の映像の1コマを確実にCanvasに固定
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     
     try {
-        // 初回実行時のみ、カメラ解像度に合わせてARコントローラを初期化
         if (!arController) {
             arController = new ARController(canvas.width, canvas.height, null);
-            // マーカーのパターン検知モードを「正方形のバーコード（ArUco等）モード」に設定
             arController.setPatternDetectionMode(artoolkit.AR_MATRIX_CODE_DETECTION);
-            // マーカーの規格を「4x4のバーコード（DICT_4X4_50相当）」に厳密に指定
             arController.setMatrixCodeType(artoolkit.AR_MATRIX_CODE_4x4);
         }
 
-        // コントローラにCanvas要素を渡して、4x4マーカーの解析を実行
         arController.detectMarker(canvas);
         
-        // 検出されたマーカーの総数を安全に取得
         const count = arController.getMarkerNum();
         document.getElementById('status-count').innerText = `${count} 個`;
 
         if (count > 0) {
             document.getElementById('status-count').style.color = "lightgreen";
             
-            // 検出されたすべてのマーカーの位置（四隅の座標）をループ処理
             for (let i = 0; i < count; i++) {
                 let markerInfo = arController.getMarker(i);
+                let vertex = markerInfo.vertex; 
                 
-                // AR.jsの内部仕様に基づき、中心点と外枠の相対位置から正確な四隅のピクセル座標を算出
-                let vertex = markerInfo.vertex; // [x, y] の二次元配列が4点格納されている
-                
-                // 標準Canvas APIで、メモリ違反を起こさずに安全に青枠を描画
                 ctx.strokeStyle = "#00ffff";
                 ctx.lineWidth = 6;
                 ctx.beginPath();
@@ -117,7 +104,6 @@ function runSingleTest() {
                 ctx.closePath();
                 ctx.stroke();
                 
-                // マーカーに割り当てられたマトリックスIDを赤文字で描画
                 ctx.fillStyle = "red";
                 ctx.font = "bold 35px sans-serif";
                 ctx.fillText(`ID:${markerInfo.idMatrix}`, vertex[0][0], vertex[0][1] - 15);
