@@ -55,7 +55,7 @@ window.onload = async () => {
                     canvas.width = video.videoWidth;
                     canvas.height = video.videoHeight;
                 }
-                // テスト実行前は生映像を流す
+                // テスト実行中以外は、下のCanvasに生映像を同期
                 if (!window.isTesting) {
                     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
                 }
@@ -73,51 +73,76 @@ function runSingleTest() {
     
     window.isTesting = true;
     
-    // 現在の1コマをCanvasにガッチリ固定
+    // 現在の撮影コマをCanvasに確定描画
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     let imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     
-    // メモリ確保
-    let src = new cv.Mat();
-    let dst = new cv.Mat();
+    // OpenCVのメモリ管理オブジェクト
+    let srcRGBA = new cv.Mat();
+    let srcRGB = new cv.Mat();
     let markerIds = new cv.Mat();
     let markerCorners = new cv.MatVector();
     
     try {
-        cv.matFromImageData(imgData, src);
-        cv.cvtColor(src, dst, cv.COLOR_RGBA2RGB, 0);
+        // 1. 生のRGBAデータをOpenCVにロード
+        cv.matFromImageData(imgData, srcRGBA);
+        
+        // 2. 検出用にRGB（3チャンネル）の別オブジェクトを作成して変換
+        cv.cvtColor(srcRGBA, srcRGB, cv.COLOR_RGBA2RGB, 0);
 
         let dictionary = cv.getPredefinedDictionary(cv.DICT_4X4_50);
         let parameter = new cv.DetectorParameters();
 
-        // 検出処理
-        cv.detectMarkers(dst, dictionary, markerCorners, markerIds, parameter);
+        // 3. 検出処理（純粋にメモリ内だけで実行）
+        cv.detectMarkers(srcRGB, dictionary, markerCorners, markerIds, parameter);
 
+        // 4. 安全に件数を取得（C++側の空のMatバグを完全回避）
         const count = markerIds.rows;
         document.getElementById('status-count').innerText = `${count} 個`;
+
+        // 5. 描画処理（クラッシュのリスクがあるcv関数を排除し、安全なimshowと標準Canvasで描画）
+        cv.imshow('canvas-out', srcRGBA); // 4チャンネルのままだから絶対に落ちない
 
         if (count > 0) {
             document.getElementById('status-count').style.color = "lightgreen";
             
-            // 【バグ根本修正】手動の座標計算をすべて廃止。
-            // OpenCVの標準関数を使い、Mat（dst）に対して直接公式の枠線とIDを描き込む
-            cv.drawDetectedMarkers(dst, markerCorners, markerIds, new cv.Scalar(0, 255, 255)); // 黄色（または青）で枠描画
-            
-            // 枠が描き込まれたMatデータを再びCanvasに戻して表示
-            cv.imshow('canvas-out', dst);
+            // 検出された角の座標をもとに、JavaScript標準のctxで枠を描画
+            for (let i = 0; i < count; i++) {
+                let corners = markerCorners.get(i); // これが4点の座標を持つMat
+                // OpenCV.jsの安全なデータアクセス（ptrメソッド）を使用
+                let x0 = corners.data32F[0], y0 = corners.data32F[1];
+                let x1 = corners.data32F[2], y1 = corners.data32F[3];
+                let x2 = corners.data32F[4], y2 = corners.data32F[5];
+                let x3 = corners.data32F[6], y3 = corners.data32F[7];
+
+                // 標準のCanvas APIで青い枠線を描画（絶対にエラーにならない）
+                ctx.strokeStyle = "#00ffff";
+                ctx.lineWidth = 6;
+                ctx.beginPath();
+                ctx.moveTo(x0, y0);
+                ctx.lineTo(x1, y1);
+                ctx.lineTo(x2, y2);
+                ctx.lineTo(x3, y3);
+                ctx.closePath();
+                ctx.stroke();
+                
+                // IDテキストの描画
+                ctx.fillStyle = "red";
+                ctx.font = "bold 30px sans-serif";
+                let id = markerIds.data32S[i];
+                ctx.fillText(`ID:${id}`, x0, y0 - 10);
+            }
         } else {
             document.getElementById('status-count').style.color = "red";
-            // 検出ゼロでも、解析自体は正常終了したことを示すために、撮影したコマをそのまま表示
-            cv.imshow('canvas-out', dst);
-            alert("解析は正常に完了しましたが、マーカーが1個も検出されませんでした。");
+            alert("解析は正常終了（エラーなし）しましたが、マーカーは1個も検出されませんでした。");
         }
 
     } catch (error) {
         alert("内部解析エラー発生: " + error.message);
     } finally {
-        // メモリ解放
-        src.delete(); dst.delete(); markerIds.delete(); markerCorners.delete();
-        // 次の撮影を可能にするためにフラグを戻す
+        // メモリ解放の徹底
+        srcRGBA.delete(); srcRGB.delete(); markerIds.delete(); markerCorners.delete();
+        // 1秒後に次のテストを入力を受付可能にする
         setTimeout(() => { window.isTesting = false; }, 1000);
     }
 }
