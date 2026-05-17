@@ -49,13 +49,13 @@ window.onload = async () => {
         video.srcObject = stream;
         video.play();
         
-        // ループで描画だけは常に行う
         function drawLoop() {
             if (video.readyState === video.HAVE_ENOUGH_DATA) {
                 if(canvas.width !== video.videoWidth) {
                     canvas.width = video.videoWidth;
                     canvas.height = video.videoHeight;
                 }
+                // ボタンを押すまでは、下のCanvasにも生映像をそのまま流す
                 ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
             }
             requestAnimationFrame(drawLoop);
@@ -66,22 +66,25 @@ window.onload = async () => {
     }
 };
 
-// ボタンを押した瞬間の1コマをOpenCVのメモリに直接叩き込んでテスト
 function runSingleTest() {
     if (!cvReady) { alert("ライブラリの読み込みが完了していません。"); return; }
     
+    // テスト実行時の1コマを固定描画
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    let imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    
+    // OpenCVのメモリ管理オブジェクト
+    let src = new cv.Mat();
+    let dst = new cv.Mat();
+    let markerIds = new cv.Mat();
+    let markerCorners = new cv.MatVector();
+    
     try {
-        // 現在描画されているCanvasの生のImageData（加工なし）を直に取得
-        let imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        
-        // OpenCVのメモリ領域（Mat）を作成
-        let src = cv.matFromImageData(imgData);
-        let dst = new cv.Mat();
+        // 【バグ修正1】スマホ環境でクラッシュしないよう、第一引数に空のMat（src）を明示的に渡して初期化
+        cv.matFromImageData(imgData, src);
         cv.cvtColor(src, dst, cv.COLOR_RGBA2RGB, 0);
 
-        let markerIds = new cv.Mat();
-        let markerCorners = new cv.MatVector();
-        let dictionary = cv.getPredefinedDictionary(cv.DICT_4X4_50); // 4x4_50規格
+        let dictionary = cv.getPredefinedDictionary(cv.DICT_4X4_50);
         let parameter = new cv.DetectorParameters();
 
         // 検出処理を実行
@@ -92,33 +95,40 @@ function runSingleTest() {
 
         if (count > 0) {
             document.getElementById('status-count').style.color = "lightgreen";
-            // 検知した位置にCanvas上で枠を描画して視認させる
+            
+            // 検知した位置にCanvas上で枠を描画
             for (let i = 0; i < count; i++) {
-                let corners = markerCorners.get(i).data32F;
+                // 【バグ修正2】iOS/Androidでのメモリ参照エラーを防ぐため、正式なメソッド経由で座標を抽出
+                let mat = markerCorners.get(i);
+                let x0 = mat.data32F[0], y0 = mat.data32F[1];
+                let x1 = mat.data32F[2], y1 = mat.data32F[3];
+                let x2 = mat.data32F[4], y2 = mat.data32F[5];
+                let x3 = mat.data32F[6], y3 = mat.data32F[7];
+
                 ctx.strokeStyle = "#00ffff";
                 ctx.lineWidth = 6;
                 ctx.beginPath();
-                ctx.moveTo(corners[0], corners[1]);
-                ctx.lineTo(corners[2], corners[3]);
-                ctx.lineTo(corners[4], corners[5]);
-                ctx.lineTo(corners[6], corners[7]);
+                ctx.moveTo(x0, y0);
+                ctx.lineTo(x1, y1);
+                ctx.lineTo(x2, y2);
+                ctx.lineTo(x3, y3);
                 ctx.closePath();
                 ctx.stroke();
                 
-                // マーカーの左上にインデックスを描画
                 ctx.fillStyle = "red";
                 ctx.font = "bold 30px sans-serif";
-                ctx.fillText(`ID:${i}`, corners[0], corners[1] - 10);
+                ctx.fillText(`ID:${markerIds.data32S[i]}`, x0, y0 - 10);
             }
         } else {
             document.getElementById('status-count').style.color = "red";
             alert("マーカーが検出されませんでした。画角や距離を変えてもう一度お試しください。");
         }
 
-        // メモリ解放
-        src.delete(); dst.delete(); markerIds.delete(); markerCorners.delete();
     } catch (error) {
         alert("内部解析エラー発生: " + error.message);
+    } finally {
+        // メモリリーク防止のため、エラーの有無に関わらず確実にメモリを解放
+        src.delete(); dst.delete(); markerIds.delete(); markerCorners.delete();
     }
 }
 </script>
