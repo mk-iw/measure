@@ -9,7 +9,7 @@
         body { margin: 0; overflow: hidden; background: #000; font-family: sans-serif; }
         canvas { display: block; width: 100vw; height: 100vh; touch-action: none; }
         
-        /* 上部ボタンレイアウト：テストボタン追加に伴い左側を2分割 */
+        /* 上部ボタンレイアウト */
         .controls {
             position: fixed; top: 0; left: 0; width: 100%; height: 80px;
             display: flex; z-index: 1000; pointer-events: none;
@@ -19,12 +19,9 @@
             border-radius: 8px; border: none; pointer-events: auto;
             box-shadow: 0 4px 6px rgba(0,0,0,0.3);
         }
-        /* 左側・中央：サブ操作・テスト */
         #btn-ratio { background: #555; color: white; }
-        #btn-test { background: #009688; color: white; } /* ArUcoテスト用ボタン */
+        #btn-test { background: #009688; color: white; }
         #btn-cancel { background: #666; color: white; display: none; }
-        
-        /* 右側：メイン操作（右手最適化） */
         #btn-hold { background: #2196F3; color: white; }
         #btn-save { background: #ff4444; color: white; display: none; }
     </style>
@@ -47,7 +44,7 @@ let currentNo = 1; let tankId = "1"; let mmRatio = 0.400;
 let isHolding = false; let activePoint = null;
 let cvReady = false;
 let detectedArUcoPoints = [];
-let testDisplayTimer = null; // テスト表示を一定時間で消すためのタイマー
+let testDisplayTimer = null;
 
 function onOpenCvReady() {
     cvReady = true;
@@ -101,7 +98,7 @@ function initVoiceRecognition() {
     recognition.start();
 }
 
-// 共通のArUco検出コアロジック（引数に解析したい光源ソースを渡す）
+// iPhoneのカメラ回転を補正してArUcoを検出するコアロジック
 function processArUcoDetection(imageSource) {
     if (!cvReady) return false;
     
@@ -114,14 +111,44 @@ function processArUcoDetection(imageSource) {
         let dst = new cv.Mat();
         cv.cvtColor(src, dst, cv.COLOR_RGBA2RGB, 0);
 
+        // 【iOS対策】縦横の回転耐性を上げるため、画像を正しい向きに直立させる（必要に応じて90度回転して検査）
         let markerIds = new cv.Mat();
         let markerCorners = new cv.MatVector();
-        
         let dictionary = cv.getPredefinedDictionary(cv.DICT_4X4_50);
         let parameter = new cv.DetectorParameters();
 
+        // 1回目の検出（通常向き）
         cv.detectMarkers(dst, dictionary, markerCorners, markerIds, parameter);
 
+        // 検出できなかった場合、画像を回転させて再トライ（iPhone Safariの映像向き対策）
+        if (markerIds.rows < 2) {
+            let rotated = new cv.Mat();
+            cv.rotate(dst, rotated, cv.ROTATE_90_CLOCKWISE);
+            cv.detectMarkers(rotated, dictionary, markerCorners, markerIds, parameter);
+            
+            // 回転して見つかった場合は、座標を元の1920x1080系に逆変換
+            if (markerIds.rows >= 2) {
+                detectedArUcoPoints = [];
+                let centers = [];
+                for (let i = 0; i < markerIds.rows; i++) {
+                    let corners = markerCorners.get(i).data32F;
+                    let rx = (corners[0] + corners[2] + corners[4] + corners[6]) / 4;
+                    let ry = (corners[1] + corners[3] + corners[5] + corners[7]) / 4;
+                    // 90度回転から元に戻す計算
+                    let cx = ry;
+                    let cy = 1080 - rx;
+                    centers.push({x: cx, y: cy});
+                    detectedArUcoPoints.push({x: cx, y: cy});
+                }
+                const pixelDist = Math.hypot(centers[0].x - centers[1].x, centers[0].y - centers[1].y);
+                if (pixelDist > 50) mmRatio = 350 / pixelDist;
+                rotated.delete(); src.delete(); dst.delete(); markerIds.delete(); markerCorners.delete();
+                return true;
+            }
+            rotated.delete();
+        }
+
+        // 通常向きで見つかった場合の処理
         let success = false;
         if (markerIds.rows >= 2) {
             let centers = [];
@@ -133,7 +160,6 @@ function processArUcoDetection(imageSource) {
                 centers.push({x: cx, y: cy});
                 detectedArUcoPoints.push({x: cx, y: cy});
             }
-            
             const pixelDist = Math.hypot(centers[0].x - centers[1].x, centers[0].y - centers[1].y);
             if (pixelDist > 50) {
                 mmRatio = 350 / pixelDist;
@@ -152,19 +178,16 @@ function detectArUcoAndCalibrate() {
     processArUcoDetection(lastCapturedFrame);
 }
 
-// 【新機能】ライブ映像からその場でArUcoをテスト検知する
 function testArUcoNow() {
     if (!cvReady) { alert("ライブラリがまだ読み込まれていません。"); return; }
     clearTimeout(testDisplayTimer);
-    
     const isSuccess = processArUcoDetection(video);
     if (isSuccess) {
-        // 検知できたら3秒間画面に青枠を維持して、その後自動で消す
         testDisplayTimer = setTimeout(() => {
             if (!isHolding) detectedArUcoPoints = [];
         }, 3000);
     } else {
-        alert("マーカーを2つ同時に認識できませんでした。ピントや画角、余白を確認してください。");
+        alert("マーカーを2つ同時に認識できませんでした。カメラの向きを少し変えるか、余白を確認してください。");
         detectedArUcoPoints = [];
     }
 }
@@ -178,10 +201,8 @@ function toggleHold(state) {
     } else {
         detectedArUcoPoints = [];
     }
-    
-    // ボタンの表示制御
     document.getElementById('btn-ratio').style.display = !isHolding ? 'block' : 'none';
-    document.getElementById('btn-test').style.display = !isHolding ? 'block' : 'none'; // テストボタンも同期
+    document.getElementById('btn-test').style.display = !isHolding ? 'block' : 'none';
     document.getElementById('btn-hold').style.display = !isHolding ? 'block' : 'none';
     document.getElementById('btn-cancel').style.display = isHolding ? 'block' : 'none';
     document.getElementById('btn-save').style.display = isHolding ? 'block' : 'none';
@@ -238,12 +259,17 @@ function render() {
         ctx.fillRect(ox, oy + (540 * scale) - (30 * scale), 1920 * scale, 60 * scale);
     }
     
-    // 【修正】文字被りの絶対防止：y座標を「240」と「290」まで下げ、大きなボタン(高さ80px)との距離を完全に離しました
+    // 【文字被り完全修正】固定数値ではなく、実際のCanvas描画全体の高さ（stageH）を基準に「下から350px、300px上」に強制配置
     const forkPx = Math.hypot(points.p2.x - points.p1.x, points.p2.y - points.p1.y);
     const totalPx = Math.hypot(points.p3.x - points.p1.x, points.p3.y - points.p1.y);
     const fSize = canvas.height / 25;
-    drawStyledText(`水槽${tankId} No.${String(currentNo).padStart(3, '0')} 尾叉:${(forkPx * mmRatio).toFixed(1)}mm 全長:${(totalPx * mmRatio).toFixed(1)}mm`, 20, 240, fSize);
-    drawStyledText(`Ratio: ${mmRatio.toFixed(4)} (ArUco 350mm Mode)`, 20, 290, fSize * 0.5);
+    
+    // iPhoneのRetina高解像度に対応した位置計算
+    const textY1 = stageH - 350;
+    const textY2 = stageH - 280;
+    
+    drawStyledText(`水槽${tankId} No.${String(currentNo).padStart(3, '0')} 尾叉:${(forkPx * mmRatio).toFixed(1)}mm 全長:${(totalPx * mmRatio).toFixed(1)}mm`, 40, textY1, fSize);
+    drawStyledText(`Ratio: ${mmRatio.toFixed(4)} (ArUco 350mm Mode)`, 40, textY2, fSize * 0.5);
 
     Object.values(points).forEach(p => {
         ctx.strokeStyle = "red"; ctx.lineWidth = 4;
@@ -259,7 +285,8 @@ function render() {
 function drawMagnifier(ox, oy, scale, sourceImg) {
     const mag = 3;
     const winW = 450, winH = 250;
-    const tx = (canvas.width - winW) / 2, ty = 340; // 文字の下に配置して被りを防止
+    // 拡大鏡の位置を画面中央やや上に配置して文字やボタンとの重複を回避
+    const tx = (canvas.width - winW) / 2, ty = 140; 
     ctx.save();
     ctx.strokeStyle = "yellow"; ctx.lineWidth = 4;
     ctx.strokeRect(tx, ty, winW, winH);
