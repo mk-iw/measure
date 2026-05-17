@@ -8,6 +8,7 @@
     <style>
         body { margin: 0; overflow: hidden; background: #000; font-family: sans-serif; }
         canvas { display: block; width: 100vw; height: 100vh; touch-action: none; }
+        
         .controls {
             position: fixed; top: 0; left: 0; width: 100%; height: 70px;
             display: flex; z-index: 1000; pointer-events: none;
@@ -21,6 +22,7 @@
         #btn-cancel { background: #666; color: white; display: none; }
         #btn-hold { background: #2196F3; color: white; }
         #btn-save { background: #ff4444; color: white; display: none; }
+
         #status-bar {
             position: fixed; top: 75px; left: 10px; color: yellow;
             font-size: 12px; background: rgba(0,0,0,0.6); padding: 4px 8px;
@@ -105,25 +107,20 @@ function initVoiceRecognition() {
     recognition.start();
 }
 
-// --- ArUco検知ロジックの強化版 ---
 function detectArUcoAndCalibrate() {
     if (!cvReady) return;
     detectedArUcoPoints = [];
     try {
         let src = cv.imread(lastCapturedFrame);
         let dst = new cv.Mat();
-        cv.cvtColor(src, dst, cv.COLOR_RGBA2GRAY, 0); // グレースケールで解析精度向上
+        cv.cvtColor(src, dst, cv.COLOR_RGBA2RGB, 0);
 
         let markerIds = new cv.Mat();
         let markerCorners = new cv.MatVector();
-        // 辞書を 6x6_250 に変更して汎用性を高める
-        let dictionary = cv.getPredefinedDictionary(cv.DICT_6X6_250);
-        let parameter = new cv.DetectorParameters();
         
-        // 検出パラメータの微調整
-        parameter.adaptiveThreshWinSizeMin = 3;
-        parameter.adaptiveThreshWinSizeMax = 23;
-        parameter.adaptiveThreshWinSizeStep = 10;
+        // 送付いただいた正しい画像規格「DICT_4X4_50」に辞書を照合
+        let dictionary = cv.getPredefinedDictionary(cv.DICT_4X4_50);
+        let parameter = new cv.DetectorParameters();
 
         cv.detectMarkers(dst, dictionary, markerCorners, markerIds, parameter);
 
@@ -137,10 +134,9 @@ function detectArUcoAndCalibrate() {
                 detectedArUcoPoints.push({x: cx, y: cy});
             }
             
-            // 2つのマーカー間のピクセル距離を算出
             const pixelDist = Math.hypot(centers[0].x - centers[1].x, centers[0].y - centers[1].y);
             if (pixelDist > 50) {
-                mmRatio = 350 / pixelDist; // 350mm基準で比率を自動更新
+                mmRatio = 350 / pixelDist;
                 updateStatus(`ArUco OK: ${mmRatio.toFixed(4)} mm/px`);
             }
         } else {
