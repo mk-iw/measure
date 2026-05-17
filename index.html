@@ -45,7 +45,7 @@ let isHolding = false; let activePoint = null;
 let cvReady = false;
 let detectedArUcoPoints = [];
 let testDisplayTimer = null;
-let arucoStatusText = "ArUco: Ready"; // マーカーの検知状態メッセージ
+let arucoStatusText = "ArUco: Ready";
 
 function onOpenCvReady() {
     cvReady = true;
@@ -99,17 +99,23 @@ function initVoiceRecognition() {
     recognition.start();
 }
 
-// iPhoneのカメラ回転に対応し、1個ずつの検知数も精密にチェックするコアロジック
+// 【根本修正】Canvasを経由せず、純粋な映像コマデータから直接OpenCVに流し込むセーフティロジック
 function processArUcoDetection(imageSource) {
     if (!cvReady) return false;
     detectedArUcoPoints = [];
     
-    let tempCanvas = document.createElement('canvas');
-    tempCanvas.width = 1920; tempCanvas.height = 1080;
-    tempCanvas.getContext('2d').drawImage(imageSource, 0, 0, 1920, 1080);
+    // 描画倍率の汚れが一切入っていない、ピュアな1920x1080用のバッファを用意
+    let rawCanvas = document.createElement('canvas');
+    rawCanvas.width = 1920; rawCanvas.height = 1080;
+    let rctx = rawCanvas.getContext('2d', { alpha: false });
+    rctx.drawImage(imageSource, 0, 0, 1920, 1080);
+    
+    // 純粋な生ピクセル配列を直に抽出
+    let imgData = rctx.getImageData(0, 0, 1920, 1080);
 
     try {
-        let src = cv.imread(tempCanvas);
+        // 【バグ修正】cv.imreadを使わず、生のImageDataから直接Matオブジェクトを安全に構築
+        let src = cv.matFromImageData(imgData);
         let dst = new cv.Mat();
         cv.cvtColor(src, dst, cv.COLOR_RGBA2RGB, 0);
 
@@ -118,10 +124,10 @@ function processArUcoDetection(imageSource) {
         let dictionary = cv.getPredefinedDictionary(cv.DICT_4X4_50);
         let parameter = new cv.DetectorParameters();
 
-        // 1回目：通常向きで検出
+        // 通常向きで検出
         cv.detectMarkers(dst, dictionary, markerCorners, markerIds, parameter);
 
-        // 2回目：iPhone Safari特有の横倒し映像対策（見つからなかった場合のみ回転させて再検出）
+        // iPhoneのブラウザ処理による映像の「横倒し」を考慮した2周目検出
         let isRotated = false;
         if (markerIds.rows === 0) {
             let rotated = new cv.Mat();
@@ -149,10 +155,9 @@ function processArUcoDetection(imageSource) {
                     cy = ry;
                 }
                 centers.push({x: cx, y: cy});
-                detectedArUcoPoints.push({x: cx, y: cy}); // 1つでも見つかれば描画用配列に格納
+                detectedArUcoPoints.push({x: cx, y: cy});
             }
 
-            // 2つ以上ある場合のみ倍率を更新
             if (totalFound >= 2) {
                 const pixelDist = Math.hypot(centers[0].x - centers[1].x, centers[0].y - centers[1].y);
                 if (pixelDist > 50) {
@@ -162,7 +167,6 @@ function processArUcoDetection(imageSource) {
                     return true;
                 }
             } else {
-                // 【新規】1個だけ見つかった場合の判別用テキスト
                 arucoStatusText = `マーカーを1個検知 (距離計算には2個必要です)`;
             }
         } else {
@@ -187,7 +191,6 @@ function testArUcoNow() {
     clearTimeout(testDisplayTimer);
     processArUcoDetection(video);
     
-    // テスト時は結果を分かりやすくダイアログかタイマー消去で明示
     if (detectedArUcoPoints.length > 0) {
         testDisplayTimer = setTimeout(() => {
             if (!isHolding) {
@@ -256,7 +259,7 @@ function render() {
     ctx.fillStyle = "#000"; ctx.fillRect(0, 0, stageW, stageH);
     ctx.drawImage(isHolding ? lastCapturedFrame : video, ox, oy, 1920 * scale, 1080 * scale);
 
-    // 【チェック機能】1つでも検知されていれば画面上に青い枠をしっかり描画する
+    // 1つでも検知されていれば画面上に青い枠を正確に描画
     detectedArUcoPoints.forEach((p, idx) => {
         ctx.strokeStyle = "#00ffff"; ctx.lineWidth = 5;
         ctx.strokeRect(ox + (p.x-40)*scale, oy + (p.y-40)*scale, 80*scale, 80*scale);
@@ -272,11 +275,11 @@ function render() {
     const totalPx = Math.hypot(points.p3.x - points.p1.x, points.p3.y - points.p1.y);
     const fSize = canvas.height / 25;
     
+    // 前回指定の通り、文字はボタン下に余白を持って下方に安全に配置
     const textY1 = stageH - 350;
     const textY2 = stageH - 280;
     
     drawStyledText(`水槽${tankId} No.${String(currentNo).padStart(3, '0')} 尾叉:${(forkPx * mmRatio).toFixed(1)}mm 全長:${(totalPx * mmRatio).toFixed(1)}mm`, 40, textY1, fSize);
-    // マーカーのチェック状態（1個検出中なのか、0個なのか）をリアルタイムに表示
     drawStyledText(`Ratio: ${mmRatio.toFixed(4)} | Status: ${arucoStatusText}`, 40, textY2, fSize * 0.5);
 
     Object.values(points).forEach(p => {
