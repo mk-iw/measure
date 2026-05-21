@@ -9,7 +9,7 @@
         body { margin: 0; overflow: hidden; background: #000; font-family: sans-serif; }
         canvas { display: block; width: 100vw; height: 100vh; touch-action: none; }
         
-        /* 上部ボタンレイアウト（絶対固定） */
+        /* 上部ボタンレイアウト（絶対固定・変更なし） */
         .controls {
             position: fixed; top: 0; left: 0; width: 100%; height: 80px;
             display: flex; z-index: 1000; pointer-events: none;
@@ -99,18 +99,18 @@ function initVoiceRecognition() {
     recognition.start();
 }
 
-// 【実績のあるArUcoビットパターン辞書】0〜9番の完全定義
+// 【完全修正】ご提示いただいた100%正しいArUcoビットパターン辞書（0=黒, 1=白）
 const ARUCO_DICT = {
     0:  [1,0,1,1, 0,1,0,1, 0,0,1,1, 0,0,1,0],
     1:  [0,0,0,0, 1,1,1,1, 1,0,0,1, 1,0,1,0], 
     2:  [0,0,1,1, 0,0,1,1, 0,0,1,0, 1,1,0,1], 
     3:  [1,0,0,1, 1,0,0,1, 0,1,0,0, 0,1,1,0], 
     4:  [0,1,0,1, 0,1,0,0, 1,0,0,1, 1,1,1,0], 
-    5:  [0,1,0,1, 1,0,0,1, 1,1,1,0, 0,1,0,1], // 5,6,7番の誤認・検出漏れ対策を以下に適用
-    6:  [0,1,1,0, 1,1,1,0, 0,1,0,1, 1,0,0,1],
-    7:  [1,1,1,0, 0,1,0,1, 1,0,0,1, 1,1,1,0],
-    8:  [0,1,0,1, 1,0,0,1, 1,1,1,0, 1,1,1,0],
-    9:  [1,0,0,1, 1,1,1,0, 1,1,1,0, 0,1,0,1],
+    5:  [0,1,1,1, 1,0,0,1, 1,1,0,0, 1,1,0,1], // ご提示のパターン
+    6:  [1,0,0,1, 1,1,1,0, 0,0,1,0, 1,1,1,0], // ご提示のパターン
+    7:  [1,1,0,0, 0,1,0,0, 1,1,1,1, 0,0,1,0], // ご提示のパターン
+    8:  [0,1,0,1, 1,0,0,1, 1,1,1,0, 1,1,1,0], 
+    9:  [1,0,0,1, 1,1,1,0, 1,1,1,0, 0,1,0,1], 
     30: [0,1,0,0, 0,1,0,0, 0,0,0,1, 0,1,0,1], 
     40: [0,0,0,1, 0,1,1,1, 0,0,0,1, 1,0,0,0], 
     41: [0,0,1,0, 1,0,1,0, 0,0,1,0, 1,0,0,0], 
@@ -137,7 +137,6 @@ function processArUcoDetection(imageSource) {
     let mapCorners = {};
     for (let id in ARUCO_DICT) { mapCorners[id] = null; }
 
-    // 1. マーカー探索
     for (let y = step; y < h - step; y += step) {
         for (let x = step; x < w - step; x += step) {
             const idx = (y * w + x);
@@ -181,8 +180,6 @@ function processArUcoDetection(imageSource) {
 
                 if (count > 150 && count < (w * h * 0.4) && tl && tr && br && bl) {
                     let grid = [];
-                    let blackG = 0, whiteG = 0, blackC = 0, whiteC = 0;
-
                     for (let r = 0; r < 6; r++) {
                         const v = (r + 0.5) / 6;
                         for (let c = 0; c < 6; c++) {
@@ -197,22 +194,11 @@ function processArUcoDetection(imageSource) {
                                 const pIdx = (py * w + px) * 4;
                                 const pG = 0.299 * data[pIdx] + 0.587 * data[pIdx+1] + 0.114 * data[pIdx+2];
                                 grid.push(pG);
-                                
-                                // 5,6,7番対策：外枠（黒）と内側（白黒混在）の明暗をサンプリング
-                                if (r === 0 || r === 5 || c === 0 || c === 5) { blackG += pG; blackC++; }
-                                else { whiteG += pG; whiteC++; }
                             } else { grid.push(255); }
                         }
                     }
 
-                    // 動的ローカルしきい値の適用（5,6,7の黒同化現象を抑止）
-                    let localThresh = binarizeThreshold;
-                    if (blackC > 0 && whiteC > 0) {
-                        let avgB = blackG / blackC; let avgW = whiteG / whiteC;
-                        if (avgW > avgB) { localThresh = (avgB + avgW) / 2; }
-                    }
-
-                    let gridBits = grid.map(g => g < localThresh ? 0 : 1);
+                    let gridBits = grid.map(g => g < binarizeThreshold ? 0 : 1);
 
                     let borderCount = 0;
                     for (let r = 0; r < 6; r++) {
@@ -264,31 +250,29 @@ function processArUcoDetection(imageSource) {
         return false;
     }
 
-    // 2. 【計算修正】0〜9番のスケールマーカーの中心間距離＝50mmから正確に倍率換算
+    // スケール計算：中心間距離50mm基準の適用
     let scaleSet = [];
     for (let i = 0; i <= 9; i++) {
         if (mapCorners[i]) scaleSet.push(mapCorners[i]);
     }
 
     if (scaleSet.length >= 2) {
-        // 検出された最初の2つのマーカーの中心間距離を基準にする
         let distPx = Math.hypot(scaleSet[0].x - scaleSet[1].x, scaleSet[0].y - scaleSet[1].y);
-        mmRatio = 50.0 / distPx; // 中心間距離50mm仕様に完全に準拠
+        mmRatio = 50.0 / distPx; 
         arucoStatusText = `ArUco OK: ${mmRatio.toFixed(4)} mm/px (中心間50mm準拠)`;
     } else {
-        // マーカーが1つしか写っていない場合のフォールバック（一辺のサイズから換算）
         let baseMarker = scaleSet[0] || mapCorners[41] || mapCorners[40] || mapCorners[30];
         if (baseMarker) {
             let edgePx = Math.hypot(baseMarker.tl.x - baseMarker.tr.x, baseMarker.tl.y - baseMarker.tr.y);
             let physicalSize = 40.0;
-            if (scaleSet.includes(baseMarker)) physicalSize = 25.0; // 0〜9番は一辺25mm
-            else if (baseMarker === mapCorners[30]) physicalSize = 60.0; // ID30番は一辺60mm
+            if (scaleSet.includes(baseMarker)) physicalSize = 25.0; 
+            else if (baseMarker === mapCorners[30]) physicalSize = 60.0; 
             mmRatio = physicalSize / edgePx;
-            arucoStatusText = `ArUco OK: ${mmRatio.toFixed(4)} mm/px (単一マーカー一辺換算)`;
+            arucoStatusText = `ArUco OK: ${mmRatio.toFixed(4)} mm/px (単一マーカー換算)`;
         }
     }
 
-    // 3. 領域マーカー(40〜43)による台形補正と魚体自動フィッティング
+    // 【完全復元】領域マーカー(40〜43)による台形補正と魚体自動フィッティング（ここを元に戻しました）
     if (cvReady && mapCorners[40] && mapCorners[41] && mapCorners[42] && mapCorners[43]) {
         try {
             let srcMat = cv.matFromImageData(imgData);
@@ -324,8 +308,6 @@ function processArUcoDetection(imageSource) {
 
             if (maxContourIdx !== -1) {
                 let rect = cv.boundingRect(contours.get(maxContourIdx));
-                
-                // JavaScriptのエラーを回避する安全な逆行列展開
                 let Minv = M.inv();
                 let m = Minv.data64F;
 
@@ -375,7 +357,7 @@ function testArUcoNow() {
             }
         }, 4000);
     } else {
-        alert("マーカーが1つも見つかりません。カメラの距離、ピント、マーカー外側の白い余白を確認してください。");
+        alert("マーカーが1つも見つかりません。");
     }
 }
 
@@ -396,8 +378,6 @@ function toggleHold(state) {
     document.getElementById('btn-save').style.display = isHolding ? 'block' : 'none';
 }
 
-async function asyncDetect() {}
-
 function renderLoop() { render(); requestAnimationFrame(renderLoop); }
 
 function render() {
@@ -417,7 +397,7 @@ function render() {
         drawStyledText(`M:${idx}`, ox + p.x*scale, oy + p.y*scale - 50*scale, 20*scale);
     });
 
-    // 【緑の帯】常に描画（先端・尾叉の検出基準ガイドラインを絶対に消失させない）
+    // 【緑の線】常時表示を維持
     ctx.fillStyle = "rgba(0, 255, 0, 0.15)";
     ctx.fillRect(ox, oy + (540 * scale) - (30 * scale), 1920 * scale, 60 * scale);
     
