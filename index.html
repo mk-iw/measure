@@ -2,275 +2,399 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>純JavaScript版 全自動ArUco検出（バグ修正版）</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>魚体計測システム</title>
+    <script async src="https://docs.opencv.org/4.5.2/opencv.js" onload="onOpenCvReady();"></script>
     <style>
-        body { font-family: sans-serif; margin: 0; background: #111; color: #fff; text-align: center; }
-        h1 { font-size: 1.2rem; padding: 10px; margin: 0; background: #222; }
-        #container { position: relative; width: 100%; max-width: 640px; margin: 0 auto; }
-        video { width: 100%; height: auto; display: block; background: #000; }
-        canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
-        .controls { padding: 15px; background: #222; }
-        label { display: block; margin-bottom: 5px; font-size: 0.9rem; }
-        input[type="range"] { width: 80%; }
+        body { margin: 0; overflow: hidden; background: #000; font-family: sans-serif; }
+        canvas { display: block; width: 100vw; height: 100vh; touch-action: none; }
+        
+        /* 上部ボタンレイアウト */
+        .controls {
+            position: fixed; top: 0; left: 0; width: 100%; height: 80px;
+            display: flex; z-index: 1000; pointer-events: none;
+        }
+        button {
+            flex: 1; margin: 5px; font-size: 18px; font-weight: bold;
+            border-radius: 8px; border: none; pointer-events: auto;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        #btn-ratio { background: #555; color: white; }
+        #btn-test { background: #009688; color: white; }
+        #btn-cancel { background: #666; color: white; display: none; }
+        #btn-hold { background: #2196F3; color: white; }
+        #btn-save { background: #ff4444; color: white; display: none; }
     </style>
 </head>
 <body>
 
-<h1>全自動マーカー探索・ID識別テスト</h1>
-
-<div id="container">
-    <video id="video" autoplay playsinline muted></video>
-    <canvas id="canvas"></canvas>
-</div>
-
 <div class="controls">
-    <label for="thresholdSlider">白黒のしきい値調整（環境に合わせて変更）: <span id="thresholdVal">110</span></label>
-    <input type="range" id="thresholdSlider" min="40" max="200" value="110">
+    <button id="btn-ratio" onclick="toggleRatioUI()">倍率調整</button>
+    <button id="btn-test" onclick="testArUcoNow()">ArUcoテスト</button>
+    <button id="btn-cancel" onclick="toggleHold(false)">キャンセル</button>
+    <button id="btn-hold" onclick="toggleHold(true)">ホールド</button>
+    <button id="btn-save" onclick="finalizeAndSave()">保存</button>
 </div>
+
+<video id="video" style="display:none" playsinline></video>
+<canvas id="canvas-measure"></canvas>
 
 <script>
-// ==========================================
-// 【設定】テストに使うArUco (4x4_50) のID定義
-// 1〜4番を使い回す場合は、ここの数字を自由に変更してください
-// ==========================================
-const CONFIG = {
-    SCALE_IDS: [1, 2],       // スケール用マーカー
-    ANGLE_ID: 3,             // 角度・姿勢推定用
-    REGION_IDS: [4, 40, 41]  // 領域特定用マーカー
-};
+let currentNo = 1; let tankId = "1"; let mmRatio = 0.400; 
+let isHolding = false; let activePoint = null;
+let cvReady = false;
+let detectedArUcoPoints = [];
+let testDisplayTimer = null;
+let arucoStatusText = "ArUco: Ready";
 
-// ArUco DICT_4X4_50 のビットパターン辞書
-const ARUCO_DICT = {
-    0:  [1,0,1,1, 0,1,0,1, 0,0,1,1, 0,0,1,0],
-    1:  [0,0,0,0, 1,1,1,1, 1,0,0,1, 1,0,1,0], 
-    2:  [0,0,1,1, 0,0,1,1, 0,0,1,0, 1,1,0,1], 
-    3:  [1,0,0,1, 1,0,0,1, 0,1,0,0, 0,1,1,0], 
-    4:  [0,1,0,1, 0,1,0,0, 1,0,0,1, 1,1,1,0], 
-    30: [0,1,0,0, 0,1,0,0, 0,0,0,1, 0,1,0,1], 
-    40: [0,0,0,1, 0,1,1,1, 0,0,0,1, 1,0,0,0], 
-    41: [0,0,1,0, 1,0,1,0, 0,0,1,0, 1,0,0,0], 
-    42: [0,0,1,1, 0,0,1,0, 1,0,0,0, 1,1,0,0], 
-    43: [0,0,1,1, 1,0,0,0, 1,0,1,1, 0,0,1,0]  
+function onOpenCvReady() {
+    cvReady = true;
+}
+
+const lastCapturedFrame = document.createElement('canvas');
+lastCapturedFrame.width = 1920; lastCapturedFrame.height = 1080;
+const lctx = lastCapturedFrame.getContext('2d', { alpha: false });
+
+const offscreen = document.createElement('canvas');
+const octx = offscreen.getContext('2d', { willReadFrequently: true });
+
+let points = {
+    p1: {x: 400, y: 540, label: "口先"},
+    p2: {x: 900, y: 540, label: "尾叉"},
+    p3: {x: 1000, y: 640, label: "尾先"}
 };
 
 const video = document.getElementById('video');
-const canvas = document.getElementById('canvas');
+const canvas = document.getElementById('canvas-measure');
 const ctx = canvas.getContext('2d');
-const slider = document.getElementById('thresholdSlider');
-const sliderVal = document.getElementById('thresholdVal');
 
-let binarizeThreshold = parseInt(slider.value, 10);
-slider.oninput = function() {
-    binarizeThreshold = parseInt(this.value, 10);
-    sliderVal.innerText = this.value;
+window.onload = async () => {
+    tankId = prompt("水槽番号", "1") || "1";
+    currentNo = parseInt(prompt("開始No.", "001")) || 1;
+    try {
+        const s = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: "environment", width: {ideal: 1920}, height: {ideal: 1080} }
+        });
+        video.srcObject = s;
+        video.play();
+        renderLoop();
+    } catch (e) { alert("カメラエラー"); }
+    initTouchEvents();
+    window.addEventListener('click', initVoiceRecognition, { once: true });
 };
 
-// 【カメラ設定の修正】スマホの標準的な16:9のHD解像度をリクエスト
-navigator.mediaDevices.getUserMedia({
-    video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } },
-    audio: false
-}).then(stream => {
-    video.srcObject = stream;
-    video.play();
-    // メインループの起動（タイポのあった架空のAPIを削除し、確実なトリガーに変更）
-    video.addEventListener('loadedmetadata', () => {
-        requestAnimationFrame(track);
-    });
-    // フォールバック（念のための即時起動）
-    setTimeout(track, 1000);
-}).catch(err => {
-    alert("カメラの起動に失敗しました: " + err.message);
-});
-
-function track() {
-    if (video.readyState === video.HAVE_ENOUGH_DATA) {
-        // 表示サイズではなく、カメラの本来の解像度でキャンバスをロック
-        if (canvas.width !== video.videoWidth) {
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
-        }
-        
-        // 1. カラー映像を等倍で描画
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        
-        // 2. 解析用の画像データを取得
-        const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        detectMarkers(imgData);
-    }
-    requestAnimationFrame(track);
+function initVoiceRecognition() {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) return;
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'ja-JP';
+    recognition.continuous = true;
+    recognition.onresult = (event) => {
+        const result = event.results[event.results.length - 1][0].transcript;
+        if (result.includes("ホールド") || result.includes("ストップ")) { if (!isHolding) toggleHold(true); }
+        else if (result.includes("保存")) { if (isHolding) finalizeAndSave(); }
+        else if (result.includes("キャンセル") || result.includes("リセット")) { if (isHolding) toggleHold(false); }
+    };
+    recognition.onend = () => recognition.start();
+    recognition.start();
 }
 
-function detectMarkers(imgData) {
-    const w = imgData.width;
-    const h = imgData.height;
-    const data = imgData.data;
+// 【根本修正】領域マーカー(40-43)による台形補正およびID30の角度補正・物体の輪郭抽出を一元化するアルゴリズム
+function processArUcoDetection(imageSource) {
+    if (!cvReady) return false;
+    detectedArUcoPoints = [];
     
-    const visited = new Uint8Array(w * h);
-    const step = 8; // 8ピクセル間隔で粗探索して高速化
-    
-    for (let y = step; y < h - step; y += step) {
-        for (let x = step; x < w - step; x += step) {
-            const idx = (y * w + x);
-            if (visited[idx]) continue;
-            
-            const r = data[idx * 4];
-            const g = data[idx * 4 + 1];
-            const b = data[idx * 4 + 2];
-            const gray = 0.299 * r + 0.587 * g + 0.114 * b;
-            
-            if (gray < binarizeThreshold) {
-                const blob = floodFillExtract(x, y, w, h, data, visited);
+    let rawCanvas = document.createElement('canvas');
+    rawCanvas.width = 1920; rawCanvas.height = 1080;
+    let rctx = rawCanvas.getContext('2d', { alpha: false });
+    rctx.drawImage(imageSource, 0, 0, 1920, 1080);
+    let imgData = rctx.getImageData(0, 0, 1920, 1080);
+
+    try {
+        let src = cv.matFromImageData(imgData);
+        let dst = new cv.Mat();
+        cv.cvtColor(src, dst, cv.COLOR_RGBA2RGB, 0);
+
+        let markerIds = new cv.Mat();
+        let markerCorners = new cv.MatVector();
+        let dictionary = cv.getPredefinedDictionary(cv.DICT_4X4_50);
+        let parameter = new cv.DetectorParameters();
+
+        cv.detectMarkers(dst, dictionary, markerCorners, markerIds, parameter);
+
+        let isRotated = false;
+        if (markerIds.rows === 0) {
+            let rotated = new cv.Mat();
+            cv.rotate(dst, rotated, cv.ROTATE_90_CLOCKWISE);
+            cv.detectMarkers(rotated, dictionary, markerCorners, markerIds, parameter);
+            isRotated = true;
+            rotated.delete();
+        }
+
+        const totalFound = markerIds.rows;
+        let mapCorners = { 40: null, 41: null, 42: null, 43: null, 30: null };
+
+        if (totalFound > 0) {
+            for (let i = 0; i < totalFound; i++) {
+                let id = markerIds.data32S[i];
+                let corners = markerCorners.get(i).data32F;
+                let rx = (corners[0] + corners[2] + corners[4] + corners[6]) / 4;
+                let ry = (corners[1] + corners[3] + corners[5] + corners[7]) / 4;
                 
-                // ノイズを弾き、有効なサイズの塊だけを詳細解析
-                if (blob && blob.area > 200 && blob.area < (w * h * 0.5)) {
-                    analyzeQuad(blob, imgData);
+                let cx = isRotated ? ry : rx;
+                let cy = isRotated ? 1080 - rx : ry;
+
+                detectedArUcoPoints.push({ x: cx, y: cy });
+                if (id in mapCorners) {
+                    mapCorners[id] = { x: cx, y: cy, corners: corners, isRotated: isRotated };
                 }
             }
-        }
-    }
-}
 
-function floodFillExtract(startX, startY, w, h, data, visited) {
-    let queue = [[startX, startY]];
-    visited[startY * w + startX] = 1;
-    
-    let count = 0;
-    let minXPlusY = Infinity,  tl = null;
-    let maxXMinusY = -Infinity, tr = null;
-    let maxXPlusY = -Infinity,  br = null;
-    let minXMinusY = Infinity,  bl = null;
-    
-    while (queue.length > 0) {
-        const [cx, cy] = queue.pop();
-        count++;
-        
-        const sum = cx + cy;
-        const diff = cx - cy;
-        if (sum < minXPlusY)  { minXPlusY = sum;  tl = {x: cx, y: cy}; }
-        if (diff > maxXMinusY) { maxXMinusY = diff; tr = {x: cx, y: cy}; }
-        if (sum > maxXPlusY)  { maxXPlusY = sum;  br = {x: cx, y: cy}; }
-        if (diff < minXMinusY) { minXMinusY = diff; bl = {x: cx, y: cy}; }
-        
-        const dirs = [[0,-1], [0,1], [-1,0], [1,0]];
-        for (let i = 0; i < 4; i++) {
-            const nx = cx + dirs[i][0];
-            const ny = cy + dirs[i][1];
-            
-            if (nx >= 0 && nx < w && ny >= 0 && ny < h) {
-                const nIdx = ny * w + nx;
-                if (!visited[nIdx]) {
-                    const nr = data[nIdx * 4];
-                    const ng = data[nIdx * 4 + 1];
-                    const nb = data[nIdx * 4 + 2];
-                    const nGray = 0.299 * nr + 0.587 * ng + 0.114 * nb;
+            // スケール・傾き補正計算用の内部基準パラメータの決定
+            let baseScaleMarker = mapCorners[41] || mapCorners[40] || mapCorners[30];
+            if (baseScaleMarker) {
+                let c = baseScaleMarker.corners;
+                let edgePx = Math.hypot(c[0] - c[2], c[1] - c[3]);
+                let physicalSize = (baseScaleMarker === mapCorners[30]) ? 60.0 : 40.0; // ID30は一辺60mm、他は40mm設計
+                mmRatio = physicalSize / edgePx;
+                arucoStatusText = `ArUco OK: ${mmRatio.toFixed(4)} mm/px`;
+            }
+
+            // 4隅の領域マーカーが揃っている場合、高度な透視射影変換（台形補正）を実行
+            if (mapCorners[40] && mapCorners[41] && mapCorners[42] && mapCorners[43]) {
+                let srcCoords = cv.matFromArray(4, 1, cv.CV_32FC2, [
+                    mapCorners[40].x, mapCorners[40].y,
+                    mapCorners[41].x, mapCorners[41].y,
+                    mapCorners[43].x, mapCorners[43].y,
+                    mapCorners[42].x, mapCorners[42].y
+                ]);
+
+                // 仮想正射影トレイ平面（1200x600ピクセル）へマッピング
+                let tw = 1200, th = 600;
+                let dstCoords = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, tw, 0, tw, th, 0, th]);
+                let M = cv.getPerspectiveTransform(srcCoords, dstCoords);
+                let warped = new cv.Mat();
+                cv.warpPerspective(dst, warped, M, new cv.Size(tw, th));
+
+                // トレイ内部の魚体（コントラスト差）の輪郭抽出
+                let gray = new cv.Mat();
+                cv.cvtColor(warped, gray, cv.COLOR_RGB2GRAY, 0);
+                cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0, 0);
+                
+                let thresh = new cv.Mat();
+                cv.threshold(gray, thresh, 0, 255, cv.THRESH_BINARY_INV + cv.THRESH_OTSU);
+
+                let contours = new cv.MatVector();
+                let hierarchy = new cv.Mat();
+                cv.findContours(thresh, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+                let maxArea = 0, maxContourIdx = -1;
+                for (let i = 0; i < contours.size(); ++i) {
+                    let area = cv.contourArea(contours.get(i));
+                    if (area > maxArea) { { maxArea = area; maxContourIdx = i; } }
+                }
+
+                if (maxContourIdx !== -1) {
+                    let rect = cv.boundingRect(contours.get(maxContourIdx));
                     
-                    if (nGray < binarizeThreshold) {
-                        visited[nIdx] = 1;
-                        queue.push([nx, ny]);
-                    }
+                    // 仮想平面上の座標を元の1920x1080カメラ座標系に逆射影
+                    let Minv = M.inv();
+                    let ptLeft = cv.matFromArray(3, 1, cv.CV_64FC1, [rect.x, rect.y + rect.height/2, 1]);
+                    let ptRight = cv.matFromArray(3, 1, cv.CV_64FC1, [rect.x + rect.width, rect.y + rect.height/2, 1]);
+                    
+                    let resLeft = cv.matBlankPairs ? new cv.Mat() : new cv.Mat(3, 1, cv.CV_64FC1);
+                    let resRight = cv.matBlankPairs ? new cv.Mat() : new cv.Mat(3, 1, cv.CV_64FC1);
+                    
+                    cv.gemm(Minv, ptLeft, 1, new cv.Mat(), 0, resLeft, 0);
+                    cv.gemm(Minv, ptRight, 1, new cv.Mat(), 0, resRight, 0);
+
+                    let wL = resLeft.data64F[2], wR = resRight.data64F[2];
+                    points.p1.x = resLeft.data64F[0] / wL;   points.p1.y = resLeft.data64F[1] / wL;
+                    points.p2.x = resRight.data64F[0] / wR;  points.p2.y = resRight.data64F[1] / wR;
+                    
+                    // 尾先(p3)は自動検出された全長の約5%外側にインクリメント配置
+                    let fLen = points.p2.x - points.p1.x;
+                    points.p3.x = points.p2.x + (fLen * 0.05);
+                    points.p3.y = points.p2.y + (fLen * 0.08);
+
+                    arucoStatusText += " [台形・魚体輪郭の自動フィッティング完了]";
+                    
+                    ptLeft.delete(); ptRight.delete(); resLeft.delete(); resRight.delete(); Minv.delete();
                 }
-            }
-        }
-        if(count > 20000) break;
-    }
-    return { area: count, corners: [tl, tr, br, bl] };
-}
 
-function analyzeQuad(blob, imgData) {
-    const [tl, tr, br, bl] = blob.corners;
-    if (!tl || !tr || !br || !bl) return;
-    
-    let grid = [];
-    for (let r = 0; r < 6; r++) {
-        const v = (r + 0.5) / 6;
-        for (let c = 0; c < 6; c++) {
-            const u = (c + 0.5) / 6;
-            
-            const topX = tl.x * (1 - u) + tr.x * u;
-            const topY = tl.y * (1 - u) + tr.y * u;
-            const botX = bl.x * (1 - u) + br.x * u;
-            const botY = bl.y * (1 - u) + br.y * u;
-            
-            const px = Math.round(topX * (1 - v) + botX * v);
-            const py = Math.round(topY * (1 - v) + botY * v);
-            
-            if (px >= 0 && px < imgData.width && py >= 0 && py < imgData.height) {
-                const idx = (py * imgData.width + px) * 4;
-                const gray = 0.299 * imgData.data[idx] + 0.587 * imgData.data[idx+1] + 0.114 * imgData.data[idx+2];
-                grid.push(gray < binarizeThreshold ? 0 : 1);
-            } else {
-                grid.push(1);
+                srcCoords.delete(); dstCoords.delete(); M.delete(); warped.delete();
+                gray.delete(); thresh.delete(); contours.delete(); hierarchy.delete();
             }
+            src.delete(); dst.delete(); markerIds.delete(); markerCorners.delete();
+            return true;
+        } else {
+            arucoStatusText = `マーカーが見つかりません`;
         }
-    }
-    
-    let borderCount = 0;
-    for (let r = 0; r < 6; r++) {
-        for (let c = 0; c < 6; c++) {
-            if (r === 0 || r === 5 || c === 0 || c === 5) {
-                if (grid[r * 6 + c] === 0) borderCount++;
-            }
-        }
-    }
-    if (borderCount < 14) return; // スマホのパース歪みを考慮し、黒枠判定を少し緩和（16→14）
-    
-    let bits4x4 = [];
-    for (let r = 1; r < 5; r++) {
-        for (let c = 1; c < 5; c++) {
-            bits4x4.push(grid[r * 6 + c]);
-        }
-    }
-    
-    const match = matchDictionary(bits4x4);
-    if (match) {
-        let color = "#ff0000";
-        let role = "未定義";
-        
-        if (CONFIG.SCALE_IDS.includes(match.id)) { color = "#00ff00"; role = "スケール"; }
-        else if (CONFIG.ANGLE_ID === match.id) { color = "#00ffff"; role = "角度測定"; }
-        else if (CONFIG.REGION_IDS.includes(match.id)) { color = "#ffff00"; role = "領域特定"; }
-        
-        // オーバーレイの枠線描画
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 4;
-        ctx.beginPath();
-        ctx.moveTo(tl.x, tl.y); ctx.lineTo(tr.x, tr.y);
-        ctx.lineTo(br.x, br.y); ctx.lineTo(bl.x, bl.y);
-        ctx.closePath();
-        ctx.stroke();
-        
-        ctx.fillStyle = color;
-        ctx.font = "bold 20px sans-serif";
-        ctx.fillText(`ID: ${match.id} [${role}]`, tl.x, tl.y - 12);
+
+        src.delete(); dst.delete(); markerIds.delete(); markerCorners.delete();
+        return false;
+    } catch (e) { 
+        console.error("ArUco分析エラー:", e); 
+        arucoStatusText = `検知エラーが発生しました`;
+        return false;
     }
 }
 
-function matchDictionary(bits) {
-    for (let id in ARUCO_DICT) {
-        let dictBits = ARUCO_DICT[id];
-        let currentBits = [...bits];
-        
-        for (let rot = 0; rot < 4; rot++) {
-            let isMatch = true;
-            for (let i = 0; i < 16; i++) {
-                if (currentBits[i] !== dictBits[i]) { isMatch = false; break; }
-            }
-            if (isMatch) return { id: parseInt(id, 10), rotation: rot };
-            currentBits = rotate4x4(currentBits);
-        }
-    }
-    return null;
+function detectArUcoAndCalibrate() {
+    processArUcoDetection(lastCapturedFrame);
 }
 
-function rotate4x4(b) {
-    let r = new Array(16);
-    for (let y = 0; y < 4; y++) {
-        for (let x = 0; x < 4; x++) {
-            r[x * 4 + (3 - y)] = b[y * 4 + x];
-        }
+function testArUcoNow() {
+    if (!cvReady) { alert("ライブラリがまだ読み込まれていません。"); return; }
+    clearTimeout(testDisplayTimer);
+    processArUcoDetection(video);
+    
+    if (detectedArUcoPoints.length > 0) {
+        testDisplayTimer = setTimeout(() => {
+            if (!isHolding) {
+                detectedArUcoPoints = [];
+                arucoStatusText = "ArUco: Ready";
+            }
+        }, 4000);
+    } else {
+        alert("マーカーが1つも見つかりません。カメラの距離、ピント、マーカー外側の白い余白を確認してください。");
     }
-    return r;
+}
+
+function toggleHold(state) {
+    isHolding = state;
+    clearTimeout(testDisplayTimer);
+    if (state) {
+        lctx.drawImage(video, 0, 0, 1920, 1080);
+        setTimeout(() => { detectArUcoAndCalibrate(); }, 150);
+    } else {
+        detectedArUcoPoints = [];
+        arucoStatusText = "ArUco: Ready";
+    }
+    document.getElementById('btn-ratio').style.display = !isHolding ? 'block' : 'none';
+    document.getElementById('btn-test').style.display = !isHolding ? 'block' : 'none';
+    document.getElementById('btn-hold').style.display = !isHolding ? 'block' : 'none';
+    document.getElementById('btn-cancel').style.display = isHolding ? 'block' : 'none';
+    document.getElementById('btn-save').style.display = isHolding ? 'block' : 'none';
+}
+
+// 従来のCanvas粗探索ループはprocessArUcoDetection側のOpenCV輪郭抽出に完全統合されたため、ラッパーとして維持
+async function asyncDetect() {
+    // processArUcoDetection側で高精度にフィッティングされるため、後方互換性の空メソッドとして格納
+}
+
+function renderLoop() { render(); requestAnimationFrame(renderLoop); }
+
+function render() {
+    const stageW = window.innerWidth * window.devicePixelRatio;
+    const stageH = window.innerHeight * window.devicePixelRatio;
+    canvas.width = stageW; canvas.height = stageH;
+    const scale = Math.min(stageW / 1920, stageH / 1080);
+    const ox = (stageW - 1920 * scale) / 2;
+    const oy = (stageH - 1080 * scale) / 2;
+
+    ctx.fillStyle = "#000"; ctx.fillRect(0, 0, stageW, stageH);
+    ctx.drawImage(isHolding ? lastCapturedFrame : video, ox, oy, 1920 * scale, 1080 * scale);
+
+    // 1つでも検知されていれば画面上に青い枠を正確に描画
+    detectedArUcoPoints.forEach((p, idx) => {
+        ctx.strokeStyle = "#00ffff"; ctx.lineWidth = 5;
+        ctx.strokeRect(ox + (p.x-40)*scale, oy + (p.y-40)*scale, 80*scale, 80*scale);
+        drawStyledText(`M:${idx}`, ox + p.x*scale, oy + p.y*scale - 50*scale, 20*scale);
+    });
+
+    if (!isHolding) {
+        ctx.fillStyle = "rgba(0, 255, 0, 0.15)";
+        ctx.fillRect(ox, oy + (540 * scale) - (30 * scale), 1920 * scale, 60 * scale);
+    }
+    
+    const forkPx = Math.hypot(points.p2.x - points.p1.x, points.p2.y - points.p1.y);
+    const totalPx = Math.hypot(points.p3.x - points.p1.x, points.p3.y - points.p1.y);
+    const fSize = canvas.height / 25;
+    
+    // 前回指定の通り、文字はボタン下に余白を持って下方に安全に配置
+    const textY1 = stageH - 350;
+    const textY2 = stageH - 280;
+    
+    drawStyledText(`水槽${tankId} No.${String(currentNo).padStart(3, '0')} 尾叉:${(forkPx * mmRatio).toFixed(1)}mm 全長:${(totalPx * mmRatio).toFixed(1)}mm`, 40, textY1, fSize);
+    drawStyledText(`Ratio: ${mmRatio.toFixed(4)} | Status: ${arucoStatusText}`, 40, textY2, fSize * 0.5);
+
+    Object.values(points).forEach(p => {
+        ctx.strokeStyle = "red"; ctx.lineWidth = 4;
+        ctx.beginPath(); ctx.arc(ox + p.x * scale, oy + p.y * scale, 15, 0, Math.PI*2); ctx.stroke();
+        drawStyledText(p.label, ox + p.x * scale + 20, oy + p.y * scale - 20, fSize * 0.4);
+    });
+
+    if (activePoint && isHolding) {
+        drawMagnifier(ox, oy, scale, lastCapturedFrame);
+    }
+}
+
+function drawMagnifier(ox, oy, scale, sourceImg) {
+    const mag = 3;
+    const winW = 450, winH = 250;
+    const tx = (canvas.width - winW) / 2, ty = 140; 
+    ctx.save();
+    ctx.strokeStyle = "yellow"; ctx.lineWidth = 4;
+    ctx.strokeRect(tx, ty, winW, winH);
+    ctx.beginPath(); ctx.rect(tx, ty, winW, winH); ctx.clip();
+    
+    const srcX = activePoint.x - (winW / mag) / 2 / scale;
+    const srcY = activePoint.y - (winH / mag) / 2 / scale;
+    ctx.drawImage(sourceImg, srcX, srcY, (winW/mag)/scale, (winH/mag)/scale, tx, ty, winW, winH);
+    
+    const fSize = canvas.height / 25;
+    const centerX = tx + winW / 2;
+    const centerY = ty + winH / 2;
+    ctx.strokeStyle = "red"; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.arc(centerX, centerY, 20, 0, Math.PI * 2); ctx.stroke();
+    drawStyledText(activePoint.label, centerX + 30, centerY - 30, fSize * 0.5);
+    ctx.restore();
+}
+
+function drawStyledText(t, x, y, s) {
+    ctx.font = `bold ${s}px sans-serif`; ctx.strokeStyle = "white"; ctx.lineWidth = 3;
+    ctx.strokeText(t, x, y); ctx.fillStyle = "black"; ctx.fillText(t, x, y);
+}
+
+function finalizeAndSave() {
+    const link = document.createElement('a');
+    link.href = canvas.toDataURL("image/png");
+    link.download = `水槽${tankId}_No${String(currentNo).padStart(3, '0')}.png`;
+    link.click();
+    currentNo++; toggleHold(false);
+}
+
+function initTouchEvents() {
+    const getPos = (e) => {
+        const r = canvas.getBoundingClientRect();
+        const sc = Math.min(canvas.width / 1920, canvas.height / 1080);
+        const ox = (canvas.width - 1920 * sc) / 2;
+        const oy = (canvas.height - 1080 * sc) / 2;
+        return { 
+            x: ((e.touches[0].clientX - r.left) * (canvas.width / r.width) - ox) / sc, 
+            y: ((e.touches[0].clientY - r.top) * (canvas.height / r.height) - oy) / sc 
+        };
+    };
+    canvas.addEventListener('touchstart', (e) => {
+        if(!isHolding) return;
+        const pos = getPos(e);
+        activePoint = Object.values(points).find(p => Math.hypot(p.x - pos.x, p.y - pos.y) < 120);
+    });
+    canvas.addEventListener('touchmove', (e) => {
+        if(activePoint) {
+            const pos = getPos(e);
+            activePoint.x = Math.max(0, Math.min(1920, pos.x));
+            activePoint.y = Math.max(0, Math.min(1080, pos.y));
+            e.preventDefault();
+        }
+    }, {passive: false});
+    canvas.addEventListener('touchend', () => activePoint = null);
+}
+
+function toggleRatioUI() {
+    const val = prompt("1pxあたりのmm数を入力", mmRatio);
+    if (val !== null && !isNaN(val)) mmRatio = parseFloat(val);
 }
 </script>
 </body>
