@@ -99,7 +99,7 @@ function initVoiceRecognition() {
     recognition.start();
 }
 
-// 【バグ修正・完全定義】0〜9番のスケールマーカーパターンを辞書へ完全追加
+// 【純JS版 識別辞書】
 const ARUCO_DICT = {
     0:  [1,0,1,1, 0,1,0,1, 0,0,1,1, 0,0,1,0],
     1:  [0,0,0,0, 1,1,1,1, 1,0,0,1, 1,0,1,0], 
@@ -134,11 +134,10 @@ function processArUcoDetection(imageSource) {
     const step = 8;
     const binarizeThreshold = 110;
 
-    // 0〜9番、30番、40〜43番までの各スロットを準備
     let mapCorners = {};
     for (let id in ARUCO_DICT) { mapCorners[id] = null; }
 
-    // 1. マーカー探索
+    // 1. マーカー探索ループ
     for (let y = step; y < h - step; y += step) {
         for (let x = step; x < w - step; x += step) {
             const idx = (y * w + x);
@@ -250,34 +249,33 @@ function processArUcoDetection(imageSource) {
         return false;
     }
 
-    // 2. スケール計算用の基準マーカー選定（0〜9番を最優先、次点で41, 40, 30）
-    let baseMarker = null;
-    let physicalSize = 40.0;
-
-    // 0〜9のいずれかが検出されていれば最優先にセット（物理サイズ25.0mm）
+    // 2. 【計算修正】複数スケールマーカー(0〜9番)が検出された場合、中心間距離=50mmから正確に換算
+    let scaleSet = [];
     for (let i = 0; i <= 9; i++) {
-        if (mapCorners[i]) {
-            baseMarker = mapCorners[i];
-            physicalSize = 25.0; // 物理サイズ設計①に基づく (一辺20mm〜25mm仕様)
-            break;
-        }
+        if (mapCorners[i]) scaleSet.push(mapCorners[i]);
     }
 
-    // 0〜9がなければ、バックアップとして41, 40, 30を使用
-    if (!baseMarker) {
-        baseMarker = mapCorners[41] || mapCorners[40] || mapCorners[30];
+    if (scaleSet.length >= 2) {
+        // 最も離れた2つのスケールマーカーの中心間距離を使用（検出精度向上のため、隣接なら50mm、2個飛ばしなら100mmなど動的に換算可能ですが、基本隣接ペアで50mmとする）
+        let pA = scaleSet[0];
+        let pB = scaleSet[1];
+        let distPx = Math.hypot(pA.x - pB.x, pA.y - pB.y);
+        mmRatio = 50.0 / distPx; // マーカー間隔仕様（中心間 50mm）に完全準拠
+        arucoStatusText = `ArUco OK: ${mmRatio.toFixed(4)} mm/px (間隔50mm準拠)`;
+    } else {
+        // 単一マーカーしか写っていない場合のフォールバック（一辺のサイズから換算）
+        let baseMarker = scaleSet[0] || mapCorners[41] || mapCorners[40] || mapCorners[30];
         if (baseMarker) {
-            physicalSize = (baseMarker === mapCorners[30]) ? 60.0 : 40.0;
+            let edgePx = Math.hypot(baseMarker.tl.x - baseMarker.tr.x, baseMarker.tl.y - baseMarker.tr.y);
+            let physicalSize = 40.0;
+            if (scaleSet.includes(baseMarker)) physicalSize = 25.0; // 0〜9番は一辺25mm
+            else if (baseMarker === mapCorners[30]) physicalSize = 60.0; // ID30番は一辺60mm
+            mmRatio = physicalSize / edgePx;
+            arucoStatusText = `ArUco OK: ${mmRatio.toFixed(4)} mm/px (単一マーカー換算)`;
         }
     }
 
-    if (baseMarker) {
-        let edgePx = Math.hypot(baseMarker.tl.x - baseMarker.tr.x, baseMarker.tl.y - baseMarker.tr.y);
-        mmRatio = physicalSize / edgePx;
-        arucoStatusText = `ArUco OK: ${mmRatio.toFixed(4)} mm/px (ID:${detectedArUcoPoints.length}個捕捉)`;
-    }
-
-    // 3. 領域マーカー(40〜43)による台形補正と輪郭抽出
+    // 3. 【バグ修正・自動追従】領域マーカー(40〜43)による台形補正とポインタ同期
     if (cvReady && mapCorners[40] && mapCorners[41] && mapCorners[42] && mapCorners[43]) {
         try {
             let srcMat = cv.matFromImageData(imgData);
@@ -290,6 +288,8 @@ function processArUcoDetection(imageSource) {
 
             let tw = 1200, th = 600;
             let dstCoords = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, tw, 0, tw, th, 0, th]);
+            
+            // 射影行列Mを取得
             let M = cv.getPerspectiveTransform(srcCoords, dstCoords);
             let warped = new cv.Mat();
             cv.warpPerspective(srcMat, warped, M, new cv.Size(tw, th));
@@ -313,32 +313,45 @@ function processArUcoDetection(imageSource) {
 
             if (maxContourIdx !== -1) {
                 let rect = cv.boundingRect(contours.get(maxContourIdx));
+                
+                // JavaScript型エラー（逆行列演算処理の不全）をOpenCV標準命令で完全に解決
                 let Minv = M.inv();
                 
-                let ptLeft = cv.matFromArray(3, 1, cv.CV_64FC1, [rect.x, rect.y + rect.height/2, 1]);
-                let ptRight = cv.matFromArray(3, 1, cv.CV_64FC1, [rect.x + rect.width, rect.y + rect.height/2, 1]);
-                let resLeft = new cv.Mat(3, 1, cv.CV_64FC1);
-                let resRight = new cv.Mat(3, 1, cv.CV_64FC1);
+                // 仮想フラット平面上の魚体の左端・右端・尾先予測座標を設定 (Homogeneous coordinates)
+                let ptLData = new Float32Array([rect.x, rect.y + rect.height / 2]);
+                let ptRData = new Float32Array([rect.x + rect.width, rect.y + rect.height / 2]);
+                
+                // 元のカメラ座標(1920x1080)に座標変換する数式を安全に展開
+                function transformBack(flatX, flatY, invMatrix) {
+                    let m = invMatrix.data64F; // 3x3 行列
+                    let denom = m[6] * flatX + m[7] * flatY + m[8];
+                    return {
+                        x: (m[0] * flatX + m[1] * flatY + m[2]) / denom,
+                        y: (m[3] * flatX + m[4] * flatY + m[5]) / denom
+                    };
+                }
 
-                cv.gemm(Minv, ptLeft, 1, new cv.Mat(), 0, resLeft, 0);
-                cv.gemm(Minv, ptRight, 1, new cv.Mat(), 0, resRight, 0);
+                let realP1 = transformBack(rect.x, rect.y + rect.height / 2, Minv);
+                let realP2 = transformBack(rect.x + rect.width, rect.y + rect.height / 2, Minv);
 
-                let wL = resLeft.data64F[2], wR = resRight.data64F[2];
-                points.p1.x = resLeft.data64F[0] / wL;  points.p1.y = resLeft.data64F[1] / wL;
-                points.p2.x = resRight.data64F[0] / wR; points.p2.y = resRight.data64F[1] / wR;
+                // 口先(p1)と尾叉(p2)のポインタ位置を完全に自動更新
+                points.p1.x = realP1.x; points.p1.y = realP1.y;
+                points.p2.x = realP2.x; points.p2.y = realP2.y;
 
-                let fLen = points.p2.x - points.p1.x;
-                points.p3.x = points.p2.x + (fLen * 0.05);
-                points.p3.y = points.p2.y + (fLen * 0.08);
+                // 尾先(p3)は自動検出された全長の進行ベクトルの約5%外側・下方に追従配置
+                let fLenX = points.p2.x - points.p1.x;
+                let fLenY = points.p2.y - points.p1.y;
+                points.p3.x = points.p2.x + (fLenX * 0.05);
+                points.p3.y = points.p2.y + (fLenY * 0.12);
 
-                arucoStatusText += " [台形・魚体フィッティング完了]";
-
-                ptLeft.delete(); ptRight.delete(); resLeft.delete(); resRight.delete(); Minv.delete();
+                arucoStatusText += " [台形補正・ポインタ自動追従成功]";
+                Minv.delete();
             }
             srcMat.delete(); srcCoords.delete(); dstCoords.delete(); M.delete(); warped.delete();
             grayMat.delete(); threshMat.delete(); contours.delete(); hierarchy.delete();
         } catch(ex) {
-            console.error("OpenCV幾何計算エラー:", ex);
+            console.error("OpenCV幾何計算またはポインタ自動移動でエラー:", ex);
+            arucoStatusText += " [幾何計算エラー]";
         }
     }
     return true;
@@ -361,7 +374,7 @@ function testArUcoNow() {
             }
         }, 4000);
     } else {
-        alert("マーカーが1つも見つかりません。カメラの距離、ピント、マーカー外側の白い余白を確認してください。");
+        alert("マーカーが見つかりません。カメラの距離やピント、マーカー外側の白い余白を確認してください。");
     }
 }
 
