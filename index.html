@@ -99,9 +99,26 @@ function initVoiceRecognition() {
     recognition.start();
 }
 
-// 【根本修正】領域マーカー(40-43)による台形補正およびID30の角度補正・物体の輪郭抽出を一元化するアルゴリズム
+// 【バグ修正・完全定義】0〜9番のスケールマーカーパターンを辞書へ完全追加
+const ARUCO_DICT = {
+    0:  [1,0,1,1, 0,1,0,1, 0,0,1,1, 0,0,1,0],
+    1:  [0,0,0,0, 1,1,1,1, 1,0,0,1, 1,0,1,0], 
+    2:  [0,0,1,1, 0,0,1,1, 0,0,1,0, 1,1,0,1], 
+    3:  [1,0,0,1, 1,0,0,1, 0,1,0,0, 0,1,1,0], 
+    4:  [0,1,0,1, 0,1,0,0, 1,0,0,1, 1,1,1,0], 
+    5:  [0,1,0,1, 1,0,0,1, 1,1,1,0, 0,1,0,1],
+    6:  [0,1,1,0, 1,1,1,0, 0,1,0,1, 1,0,0,1],
+    7:  [1,1,1,0, 0,1,0,1, 1,0,0,1, 1,1,1,0],
+    8:  [0,1,0,1, 1,0,0,1, 1,1,1,0, 1,1,1,0],
+    9:  [1,0,0,1, 1,1,1,0, 1,1,1,0, 0,1,0,1],
+    30: [0,1,0,0, 0,1,0,0, 0,0,0,1, 0,1,0,1], 
+    40: [0,0,0,1, 0,1,1,1, 0,0,0,1, 1,0,0,0], 
+    41: [0,0,1,0, 1,0,1,0, 0,0,1,0, 1,0,0,0], 
+    42: [0,0,1,1, 0,0,1,0, 1,0,0,0, 1,1,0,0], 
+    43: [0,0,1,1, 1,0,0,0, 1,0,1,1, 0,0,1,0]  
+};
+
 function processArUcoDetection(imageSource) {
-    if (!cvReady) return false;
     detectedArUcoPoints = [];
     
     let rawCanvas = document.createElement('canvas');
@@ -110,134 +127,221 @@ function processArUcoDetection(imageSource) {
     rctx.drawImage(imageSource, 0, 0, 1920, 1080);
     let imgData = rctx.getImageData(0, 0, 1920, 1080);
 
-    try {
-        let src = cv.matFromImageData(imgData);
-        let dst = new cv.Mat();
-        cv.cvtColor(src, dst, cv.COLOR_RGBA2RGB, 0);
+    const w = imgData.width;
+    const h = imgData.height;
+    const data = imgData.data;
+    const visited = new Uint8Array(w * h);
+    const step = 8;
+    const binarizeThreshold = 110;
 
-        let markerIds = new cv.Mat();
-        let markerCorners = new cv.MatVector();
-        let dictionary = cv.getPredefinedDictionary(cv.DICT_4X4_50);
-        let parameter = new cv.DetectorParameters();
+    // 0〜9番、30番、40〜43番までの各スロットを準備
+    let mapCorners = {};
+    for (let id in ARUCO_DICT) { mapCorners[id] = null; }
 
-        cv.detectMarkers(dst, dictionary, markerCorners, markerIds, parameter);
+    // 1. マーカー探索
+    for (let y = step; y < h - step; y += step) {
+        for (let x = step; x < w - step; x += step) {
+            const idx = (y * w + x);
+            if (visited[idx]) continue;
+            
+            const gray = 0.299 * data[idx*4] + 0.587 * data[idx*4+1] + 0.114 * data[idx*4+2];
+            if (gray < binarizeThreshold) {
+                let queue = [[x, y]];
+                visited[y * w + x] = 1;
+                let count = 0;
+                let minXPlusY = Infinity, tl = null;
+                let maxXMinusY = -Infinity, tr = null;
+                let maxXPlusY = -Infinity, br = null;
+                let minXMinusY = Infinity, bl = null;
 
-        let isRotated = false;
-        if (markerIds.rows === 0) {
-            let rotated = new cv.Mat();
-            cv.rotate(dst, rotated, cv.ROTATE_90_CLOCKWISE);
-            cv.detectMarkers(rotated, dictionary, markerCorners, markerIds, parameter);
-            isRotated = true;
-            rotated.delete();
+                while (queue.length > 0) {
+                    const [cx, cy] = queue.pop();
+                    count++;
+                    const sum = cx + cy; const diff = cx - cy;
+                    if (sum < minXPlusY)   { minXPlusY = sum; tl = {x: cx, y: cy}; }
+                    if (diff > maxXMinusY) { maxXMinusY = diff; tr = {x: cx, y: cy}; }
+                    if (sum > maxXPlusY)   { maxXPlusY = sum; br = {x: cx, y: cy}; }
+                    if (diff < minXMinusY) { minXMinusY = diff; bl = {x: cx, y: cy}; }
+
+                    const dirs = [[0,-1], [0,1], [-1,0], [1,0]];
+                    for (let i = 0; i < 4; i++) {
+                        const nx = cx + dirs[i][0]; const ny = cy + dirs[i][1];
+                        if (nx >= 0 && nx < w && ny >= 0 && ny < h) {
+                            const nIdx = ny * w + nx;
+                            if (!visited[nIdx]) {
+                                const nG = 0.299 * data[nIdx*4] + 0.587 * data[nIdx*4+1] + 0.114 * data[nIdx*4+2];
+                                if (nG < binarizeThreshold) {
+                                    visited[nIdx] = 1;
+                                    queue.push([nx, ny]);
+                                }
+                            }
+                        }
+                    }
+                    if(count > 15000) break;
+                }
+
+                if (count > 150 && count < (w * h * 0.4) && tl && tr && br && bl) {
+                    let grid = [];
+                    for (let r = 0; r < 6; r++) {
+                        const v = (r + 0.5) / 6;
+                        for (let c = 0; c < 6; c++) {
+                            const u = (c + 0.5) / 6;
+                            const topX = tl.x * (1 - u) + tr.x * u;
+                            const topY = tl.y * (1 - u) + tr.y * u;
+                            const botX = bl.x * (1 - u) + br.x * u;
+                            const botY = bl.y * (1 - u) + br.y * u;
+                            const px = Math.round(topX * (1 - v) + botX * v);
+                            const py = Math.round(topY * (1 - v) + botY * v);
+                            if (px >= 0 && px < w && py >= 0 && py < h) {
+                                const pIdx = (py * w + px) * 4;
+                                const pG = 0.299 * data[pIdx] + 0.587 * data[pIdx+1] + 0.114 * data[pIdx+2];
+                                grid.push(pG < binarizeThreshold ? 0 : 1);
+                            } else { grid.push(1); }
+                        }
+                    }
+
+                    let borderCount = 0;
+                    for (let r = 0; r < 6; r++) {
+                        for (let c = 0; c < 6; c++) {
+                            if (r === 0 || r === 5 || c === 0 || c === 5) {
+                                if (grid[r * 6 + c] === 0) borderCount++;
+                            }
+                        }
+                    }
+                    if (borderCount >= 13) {
+                        let bits4x4 = [];
+                        for (let r = 1; r < 5; r++) {
+                            for (let c = 1; c < 5; c++) { bits4x4.push(grid[r * 6 + c]); }
+                        }
+
+                        let matchedId = null;
+                        for (let id in ARUCO_DICT) {
+                            let dictBits = ARUCO_DICT[id];
+                            let currentBits = [...bits4x4];
+                            for (let rot = 0; rot < 4; rot++) {
+                                let isMatch = true;
+                                for (let i = 0; i < 16; i++) {
+                                    if (currentBits[i] !== dictBits[i]) { isMatch = false; break; }
+                                }
+                                if (isMatch) { matchedId = parseInt(id, 10); break; }
+                                let r4 = new Array(16);
+                                for (let y4 = 0; y4 < 4; y4++) {
+                                    for (let x4 = 0; x4 < 4; x4++) { r4[x4 * 4 + (3 - y4)] = currentBits[y4 * 4 + x4]; }
+                                }
+                                currentBits = r4;
+                            }
+                            if (matchedId !== null) break;
+                        }
+
+                        if (matchedId !== null) {
+                            let midX = (tl.x + tr.x + br.x + bl.x) / 4;
+                            let midY = (tl.y + tr.y + br.y + bl.y) / 4;
+                            detectedArUcoPoints.push({ x: midX, y: midY });
+                            mapCorners[matchedId] = { x: midX, y: midY, tl: tl, tr: tr, br: br, bl: bl };
+                        }
+                    }
+                }
+            }
         }
+    }
 
-        const totalFound = markerIds.rows;
-        let mapCorners = { 40: null, 41: null, 42: null, 43: null, 30: null };
-
-        if (totalFound > 0) {
-            for (let i = 0; i < totalFound; i++) {
-                let id = markerIds.data32S[i];
-                let corners = markerCorners.get(i).data32F;
-                let rx = (corners[0] + corners[2] + corners[4] + corners[6]) / 4;
-                let ry = (corners[1] + corners[3] + corners[5] + corners[7]) / 4;
-                
-                let cx = isRotated ? ry : rx;
-                let cy = isRotated ? 1080 - rx : ry;
-
-                detectedArUcoPoints.push({ x: cx, y: cy });
-                if (id in mapCorners) {
-                    mapCorners[id] = { x: cx, y: cy, corners: corners, isRotated: isRotated };
-                }
-            }
-
-            // スケール・傾き補正計算用の内部基準パラメータの決定
-            let baseScaleMarker = mapCorners[41] || mapCorners[40] || mapCorners[30];
-            if (baseScaleMarker) {
-                let c = baseScaleMarker.corners;
-                let edgePx = Math.hypot(c[0] - c[2], c[1] - c[3]);
-                let physicalSize = (baseScaleMarker === mapCorners[30]) ? 60.0 : 40.0; // ID30は一辺60mm、他は40mm設計
-                mmRatio = physicalSize / edgePx;
-                arucoStatusText = `ArUco OK: ${mmRatio.toFixed(4)} mm/px`;
-            }
-
-            // 4隅の領域マーカーが揃っている場合、高度な透視射影変換（台形補正）を実行
-            if (mapCorners[40] && mapCorners[41] && mapCorners[42] && mapCorners[43]) {
-                let srcCoords = cv.matFromArray(4, 1, cv.CV_32FC2, [
-                    mapCorners[40].x, mapCorners[40].y,
-                    mapCorners[41].x, mapCorners[41].y,
-                    mapCorners[43].x, mapCorners[43].y,
-                    mapCorners[42].x, mapCorners[42].y
-                ]);
-
-                // 仮想正射影トレイ平面（1200x600ピクセル）へマッピング
-                let tw = 1200, th = 600;
-                let dstCoords = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, tw, 0, tw, th, 0, th]);
-                let M = cv.getPerspectiveTransform(srcCoords, dstCoords);
-                let warped = new cv.Mat();
-                cv.warpPerspective(dst, warped, M, new cv.Size(tw, th));
-
-                // トレイ内部の魚体（コントラスト差）の輪郭抽出
-                let gray = new cv.Mat();
-                cv.cvtColor(warped, gray, cv.COLOR_RGB2GRAY, 0);
-                cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0, 0);
-                
-                let thresh = new cv.Mat();
-                cv.threshold(gray, thresh, 0, 255, cv.THRESH_BINARY_INV + cv.THRESH_OTSU);
-
-                let contours = new cv.MatVector();
-                let hierarchy = new cv.Mat();
-                cv.findContours(thresh, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-
-                let maxArea = 0, maxContourIdx = -1;
-                for (let i = 0; i < contours.size(); ++i) {
-                    let area = cv.contourArea(contours.get(i));
-                    if (area > maxArea) { { maxArea = area; maxContourIdx = i; } }
-                }
-
-                if (maxContourIdx !== -1) {
-                    let rect = cv.boundingRect(contours.get(maxContourIdx));
-                    
-                    // 仮想平面上の座標を元の1920x1080カメラ座標系に逆射影
-                    let Minv = M.inv();
-                    let ptLeft = cv.matFromArray(3, 1, cv.CV_64FC1, [rect.x, rect.y + rect.height/2, 1]);
-                    let ptRight = cv.matFromArray(3, 1, cv.CV_64FC1, [rect.x + rect.width, rect.y + rect.height/2, 1]);
-                    
-                    let resLeft = cv.matBlankPairs ? new cv.Mat() : new cv.Mat(3, 1, cv.CV_64FC1);
-                    let resRight = cv.matBlankPairs ? new cv.Mat() : new cv.Mat(3, 1, cv.CV_64FC1);
-                    
-                    cv.gemm(Minv, ptLeft, 1, new cv.Mat(), 0, resLeft, 0);
-                    cv.gemm(Minv, ptRight, 1, new cv.Mat(), 0, resRight, 0);
-
-                    let wL = resLeft.data64F[2], wR = resRight.data64F[2];
-                    points.p1.x = resLeft.data64F[0] / wL;   points.p1.y = resLeft.data64F[1] / wL;
-                    points.p2.x = resRight.data64F[0] / wR;  points.p2.y = resRight.data64F[1] / wR;
-                    
-                    // 尾先(p3)は自動検出された全長の約5%外側にインクリメント配置
-                    let fLen = points.p2.x - points.p1.x;
-                    points.p3.x = points.p2.x + (fLen * 0.05);
-                    points.p3.y = points.p2.y + (fLen * 0.08);
-
-                    arucoStatusText += " [台形・魚体輪郭の自動フィッティング完了]";
-                    
-                    ptLeft.delete(); ptRight.delete(); resLeft.delete(); resRight.delete(); Minv.delete();
-                }
-
-                srcCoords.delete(); dstCoords.delete(); M.delete(); warped.delete();
-                gray.delete(); thresh.delete(); contours.delete(); hierarchy.delete();
-            }
-            src.delete(); dst.delete(); markerIds.delete(); markerCorners.delete();
-            return true;
-        } else {
-            arucoStatusText = `マーカーが見つかりません`;
-        }
-
-        src.delete(); dst.delete(); markerIds.delete(); markerCorners.delete();
-        return false;
-    } catch (e) { 
-        console.error("ArUco分析エラー:", e); 
-        arucoStatusText = `検知エラーが発生しました`;
+    if (detectedArUcoPoints.length === 0) {
+        arucoStatusText = `マーカーが見つかりません`;
         return false;
     }
+
+    // 2. スケール計算用の基準マーカー選定（0〜9番を最優先、次点で41, 40, 30）
+    let baseMarker = null;
+    let physicalSize = 40.0;
+
+    // 0〜9のいずれかが検出されていれば最優先にセット（物理サイズ25.0mm）
+    for (let i = 0; i <= 9; i++) {
+        if (mapCorners[i]) {
+            baseMarker = mapCorners[i];
+            physicalSize = 25.0; // 物理サイズ設計①に基づく (一辺20mm〜25mm仕様)
+            break;
+        }
+    }
+
+    // 0〜9がなければ、バックアップとして41, 40, 30を使用
+    if (!baseMarker) {
+        baseMarker = mapCorners[41] || mapCorners[40] || mapCorners[30];
+        if (baseMarker) {
+            physicalSize = (baseMarker === mapCorners[30]) ? 60.0 : 40.0;
+        }
+    }
+
+    if (baseMarker) {
+        let edgePx = Math.hypot(baseMarker.tl.x - baseMarker.tr.x, baseMarker.tl.y - baseMarker.tr.y);
+        mmRatio = physicalSize / edgePx;
+        arucoStatusText = `ArUco OK: ${mmRatio.toFixed(4)} mm/px (ID:${detectedArUcoPoints.length}個捕捉)`;
+    }
+
+    // 3. 領域マーカー(40〜43)による台形補正と輪郭抽出
+    if (cvReady && mapCorners[40] && mapCorners[41] && mapCorners[42] && mapCorners[43]) {
+        try {
+            let srcMat = cv.matFromImageData(imgData);
+            let srcCoords = cv.matFromArray(4, 1, cv.CV_32FC2, [
+                mapCorners[40].x, mapCorners[40].y,
+                mapCorners[41].x, mapCorners[41].y,
+                mapCorners[43].x, mapCorners[43].y,
+                mapCorners[42].x, mapCorners[42].y
+            ]);
+
+            let tw = 1200, th = 600;
+            let dstCoords = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, tw, 0, tw, th, 0, th]);
+            let M = cv.getPerspectiveTransform(srcCoords, dstCoords);
+            let warped = new cv.Mat();
+            cv.warpPerspective(srcMat, warped, M, new cv.Size(tw, th));
+
+            let grayMat = new cv.Mat();
+            cv.cvtColor(warped, grayMat, cv.COLOR_RGBA2GRAY, 0);
+            cv.GaussianBlur(grayMat, grayMat, new cv.Size(5, 5), 0, 0);
+
+            let threshMat = new cv.Mat();
+            cv.threshold(grayMat, threshMat, 0, 255, cv.THRESH_BINARY_INV + cv.THRESH_OTSU);
+
+            let contours = new cv.MatVector();
+            let hierarchy = new cv.Mat();
+            cv.findContours(threshMat, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+            let maxArea = 0, maxContourIdx = -1;
+            for (let i = 0; i < contours.size(); ++i) {
+                let area = cv.contourArea(contours.get(i));
+                if (area > maxArea) { maxArea = area; maxContourIdx = i; }
+            }
+
+            if (maxContourIdx !== -1) {
+                let rect = cv.boundingRect(contours.get(maxContourIdx));
+                let Minv = M.inv();
+                
+                let ptLeft = cv.matFromArray(3, 1, cv.CV_64FC1, [rect.x, rect.y + rect.height/2, 1]);
+                let ptRight = cv.matFromArray(3, 1, cv.CV_64FC1, [rect.x + rect.width, rect.y + rect.height/2, 1]);
+                let resLeft = new cv.Mat(3, 1, cv.CV_64FC1);
+                let resRight = new cv.Mat(3, 1, cv.CV_64FC1);
+
+                cv.gemm(Minv, ptLeft, 1, new cv.Mat(), 0, resLeft, 0);
+                cv.gemm(Minv, ptRight, 1, new cv.Mat(), 0, resRight, 0);
+
+                let wL = resLeft.data64F[2], wR = resRight.data64F[2];
+                points.p1.x = resLeft.data64F[0] / wL;  points.p1.y = resLeft.data64F[1] / wL;
+                points.p2.x = resRight.data64F[0] / wR; points.p2.y = resRight.data64F[1] / wR;
+
+                let fLen = points.p2.x - points.p1.x;
+                points.p3.x = points.p2.x + (fLen * 0.05);
+                points.p3.y = points.p2.y + (fLen * 0.08);
+
+                arucoStatusText += " [台形・魚体フィッティング完了]";
+
+                ptLeft.delete(); ptRight.delete(); resLeft.delete(); resRight.delete(); Minv.delete();
+            }
+            srcMat.delete(); srcCoords.delete(); dstCoords.delete(); M.delete(); warped.delete();
+            grayMat.delete(); threshMat.delete(); contours.delete(); hierarchy.delete();
+        } catch(ex) {
+            console.error("OpenCV幾何計算エラー:", ex);
+        }
+    }
+    return true;
 }
 
 function detectArUcoAndCalibrate() {
@@ -278,10 +382,7 @@ function toggleHold(state) {
     document.getElementById('btn-save').style.display = isHolding ? 'block' : 'none';
 }
 
-// 従来のCanvas粗探索ループはprocessArUcoDetection側のOpenCV輪郭抽出に完全統合されたため、ラッパーとして維持
-async function asyncDetect() {
-    // processArUcoDetection側で高精度にフィッティングされるため、後方互換性の空メソッドとして格納
-}
+async function asyncDetect() {}
 
 function renderLoop() { render(); requestAnimationFrame(renderLoop); }
 
@@ -296,7 +397,6 @@ function render() {
     ctx.fillStyle = "#000"; ctx.fillRect(0, 0, stageW, stageH);
     ctx.drawImage(isHolding ? lastCapturedFrame : video, ox, oy, 1920 * scale, 1080 * scale);
 
-    // 1つでも検知されていれば画面上に青い枠を正確に描画
     detectedArUcoPoints.forEach((p, idx) => {
         ctx.strokeStyle = "#00ffff"; ctx.lineWidth = 5;
         ctx.strokeRect(ox + (p.x-40)*scale, oy + (p.y-40)*scale, 80*scale, 80*scale);
@@ -312,7 +412,6 @@ function render() {
     const totalPx = Math.hypot(points.p3.x - points.p1.x, points.p3.y - points.p1.y);
     const fSize = canvas.height / 25;
     
-    // 前回指定の通り、文字はボタン下に余白を持って下方に安全に配置
     const textY1 = stageH - 350;
     const textY2 = stageH - 280;
     
