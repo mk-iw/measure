@@ -9,7 +9,7 @@
         body { margin: 0; overflow: hidden; background: #000; font-family: sans-serif; }
         canvas { display: block; width: 100vw; height: 100vh; touch-action: none; }
         
-        /* 上部ボタンレイアウト */
+        /* 上部ボタンレイアウト（絶対固定） */
         .controls {
             position: fixed; top: 0; left: 0; width: 100%; height: 80px;
             display: flex; z-index: 1000; pointer-events: none;
@@ -99,14 +99,14 @@ function initVoiceRecognition() {
     recognition.start();
 }
 
-// 【純JS版 識別辞書】
+// 【実績のあるArUcoビットパターン辞書】0〜9番の完全定義
 const ARUCO_DICT = {
     0:  [1,0,1,1, 0,1,0,1, 0,0,1,1, 0,0,1,0],
     1:  [0,0,0,0, 1,1,1,1, 1,0,0,1, 1,0,1,0], 
     2:  [0,0,1,1, 0,0,1,1, 0,0,1,0, 1,1,0,1], 
     3:  [1,0,0,1, 1,0,0,1, 0,1,0,0, 0,1,1,0], 
     4:  [0,1,0,1, 0,1,0,0, 1,0,0,1, 1,1,1,0], 
-    5:  [0,1,0,1, 1,0,0,1, 1,1,1,0, 0,1,0,1],
+    5:  [0,1,0,1, 1,0,0,1, 1,1,1,0, 0,1,0,1], // 5,6,7番の誤認・検出漏れ対策を以下に適用
     6:  [0,1,1,0, 1,1,1,0, 0,1,0,1, 1,0,0,1],
     7:  [1,1,1,0, 0,1,0,1, 1,0,0,1, 1,1,1,0],
     8:  [0,1,0,1, 1,0,0,1, 1,1,1,0, 1,1,1,0],
@@ -137,7 +137,7 @@ function processArUcoDetection(imageSource) {
     let mapCorners = {};
     for (let id in ARUCO_DICT) { mapCorners[id] = null; }
 
-    // 1. マーカー探索ループ
+    // 1. マーカー探索
     for (let y = step; y < h - step; y += step) {
         for (let x = step; x < w - step; x += step) {
             const idx = (y * w + x);
@@ -181,6 +181,8 @@ function processArUcoDetection(imageSource) {
 
                 if (count > 150 && count < (w * h * 0.4) && tl && tr && br && bl) {
                     let grid = [];
+                    let blackG = 0, whiteG = 0, blackC = 0, whiteC = 0;
+
                     for (let r = 0; r < 6; r++) {
                         const v = (r + 0.5) / 6;
                         for (let c = 0; c < 6; c++) {
@@ -194,23 +196,36 @@ function processArUcoDetection(imageSource) {
                             if (px >= 0 && px < w && py >= 0 && py < h) {
                                 const pIdx = (py * w + px) * 4;
                                 const pG = 0.299 * data[pIdx] + 0.587 * data[pIdx+1] + 0.114 * data[pIdx+2];
-                                grid.push(pG < binarizeThreshold ? 0 : 1);
-                            } else { grid.push(1); }
+                                grid.push(pG);
+                                
+                                // 5,6,7番対策：外枠（黒）と内側（白黒混在）の明暗をサンプリング
+                                if (r === 0 || r === 5 || c === 0 || c === 5) { blackG += pG; blackC++; }
+                                else { whiteG += pG; whiteC++; }
+                            } else { grid.push(255); }
                         }
                     }
+
+                    // 動的ローカルしきい値の適用（5,6,7の黒同化現象を抑止）
+                    let localThresh = binarizeThreshold;
+                    if (blackC > 0 && whiteC > 0) {
+                        let avgB = blackG / blackC; let avgW = whiteG / whiteC;
+                        if (avgW > avgB) { localThresh = (avgB + avgW) / 2; }
+                    }
+
+                    let gridBits = grid.map(g => g < localThresh ? 0 : 1);
 
                     let borderCount = 0;
                     for (let r = 0; r < 6; r++) {
                         for (let c = 0; c < 6; c++) {
                             if (r === 0 || r === 5 || c === 0 || c === 5) {
-                                if (grid[r * 6 + c] === 0) borderCount++;
+                                if (gridBits[r * 6 + c] === 0) borderCount++;
                             }
                         }
                     }
                     if (borderCount >= 13) {
                         let bits4x4 = [];
                         for (let r = 1; r < 5; r++) {
-                            for (let c = 1; c < 5; c++) { bits4x4.push(grid[r * 6 + c]); }
+                            for (let c = 1; c < 5; c++) { bits4x4.push(gridBits[r * 6 + c]); }
                         }
 
                         let matchedId = null;
@@ -249,21 +264,19 @@ function processArUcoDetection(imageSource) {
         return false;
     }
 
-    // 2. 【計算修正】複数スケールマーカー(0〜9番)が検出された場合、中心間距離=50mmから正確に換算
+    // 2. 【計算修正】0〜9番のスケールマーカーの中心間距離＝50mmから正確に倍率換算
     let scaleSet = [];
     for (let i = 0; i <= 9; i++) {
         if (mapCorners[i]) scaleSet.push(mapCorners[i]);
     }
 
     if (scaleSet.length >= 2) {
-        // 最も離れた2つのスケールマーカーの中心間距離を使用（検出精度向上のため、隣接なら50mm、2個飛ばしなら100mmなど動的に換算可能ですが、基本隣接ペアで50mmとする）
-        let pA = scaleSet[0];
-        let pB = scaleSet[1];
-        let distPx = Math.hypot(pA.x - pB.x, pA.y - pB.y);
-        mmRatio = 50.0 / distPx; // マーカー間隔仕様（中心間 50mm）に完全準拠
-        arucoStatusText = `ArUco OK: ${mmRatio.toFixed(4)} mm/px (間隔50mm準拠)`;
+        // 検出された最初の2つのマーカーの中心間距離を基準にする
+        let distPx = Math.hypot(scaleSet[0].x - scaleSet[1].x, scaleSet[0].y - scaleSet[1].y);
+        mmRatio = 50.0 / distPx; // 中心間距離50mm仕様に完全に準拠
+        arucoStatusText = `ArUco OK: ${mmRatio.toFixed(4)} mm/px (中心間50mm準拠)`;
     } else {
-        // 単一マーカーしか写っていない場合のフォールバック（一辺のサイズから換算）
+        // マーカーが1つしか写っていない場合のフォールバック（一辺のサイズから換算）
         let baseMarker = scaleSet[0] || mapCorners[41] || mapCorners[40] || mapCorners[30];
         if (baseMarker) {
             let edgePx = Math.hypot(baseMarker.tl.x - baseMarker.tr.x, baseMarker.tl.y - baseMarker.tr.y);
@@ -271,11 +284,11 @@ function processArUcoDetection(imageSource) {
             if (scaleSet.includes(baseMarker)) physicalSize = 25.0; // 0〜9番は一辺25mm
             else if (baseMarker === mapCorners[30]) physicalSize = 60.0; // ID30番は一辺60mm
             mmRatio = physicalSize / edgePx;
-            arucoStatusText = `ArUco OK: ${mmRatio.toFixed(4)} mm/px (単一マーカー換算)`;
+            arucoStatusText = `ArUco OK: ${mmRatio.toFixed(4)} mm/px (単一マーカー一辺換算)`;
         }
     }
 
-    // 3. 【バグ修正・自動追従】領域マーカー(40〜43)による台形補正とポインタ同期
+    // 3. 領域マーカー(40〜43)による台形補正と魚体自動フィッティング
     if (cvReady && mapCorners[40] && mapCorners[41] && mapCorners[42] && mapCorners[43]) {
         try {
             let srcMat = cv.matFromImageData(imgData);
@@ -288,8 +301,6 @@ function processArUcoDetection(imageSource) {
 
             let tw = 1200, th = 600;
             let dstCoords = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, tw, 0, tw, th, 0, th]);
-            
-            // 射影行列Mを取得
             let M = cv.getPerspectiveTransform(srcCoords, dstCoords);
             let warped = new cv.Mat();
             cv.warpPerspective(srcMat, warped, M, new cv.Size(tw, th));
@@ -314,44 +325,34 @@ function processArUcoDetection(imageSource) {
             if (maxContourIdx !== -1) {
                 let rect = cv.boundingRect(contours.get(maxContourIdx));
                 
-                // JavaScript型エラー（逆行列演算処理の不全）をOpenCV標準命令で完全に解決
+                // JavaScriptのエラーを回避する安全な逆行列展開
                 let Minv = M.inv();
-                
-                // 仮想フラット平面上の魚体の左端・右端・尾先予測座標を設定 (Homogeneous coordinates)
-                let ptLData = new Float32Array([rect.x, rect.y + rect.height / 2]);
-                let ptRData = new Float32Array([rect.x + rect.width, rect.y + rect.height / 2]);
-                
-                // 元のカメラ座標(1920x1080)に座標変換する数式を安全に展開
-                function transformBack(flatX, flatY, invMatrix) {
-                    let m = invMatrix.data64F; // 3x3 行列
-                    let denom = m[6] * flatX + m[7] * flatY + m[8];
-                    return {
-                        x: (m[0] * flatX + m[1] * flatY + m[2]) / denom,
-                        y: (m[3] * flatX + m[4] * flatY + m[5]) / denom
-                    };
-                }
+                let m = Minv.data64F;
 
-                let realP1 = transformBack(rect.x, rect.y + rect.height / 2, Minv);
-                let realP2 = transformBack(rect.x + rect.width, rect.y + rect.height / 2, Minv);
+                let flatX1 = rect.x;
+                let flatY1 = rect.y + rect.height / 2;
+                let denom1 = m[6] * flatX1 + m[7] * flatY1 + m[8];
+                points.p1.x = (m[0] * flatX1 + m[1] * flatY1 + m[2]) / denom1;
+                points.p1.y = (m[3] * flatX1 + m[4] * flatY1 + m[5]) / denom1;
 
-                // 口先(p1)と尾叉(p2)のポインタ位置を完全に自動更新
-                points.p1.x = realP1.x; points.p1.y = realP1.y;
-                points.p2.x = realP2.x; points.p2.y = realP2.y;
+                let flatX2 = rect.x + rect.width;
+                let flatY2 = rect.y + rect.height / 2;
+                let denom2 = m[6] * flatX2 + m[7] * flatY2 + m[8];
+                points.p2.x = (m[0] * flatX2 + m[1] * flatY2 + m[2]) / denom2;
+                points.p2.y = (m[3] * flatX2 + m[4] * flatY2 + m[5]) / denom2;
 
-                // 尾先(p3)は自動検出された全長の進行ベクトルの約5%外側・下方に追従配置
                 let fLenX = points.p2.x - points.p1.x;
                 let fLenY = points.p2.y - points.p1.y;
                 points.p3.x = points.p2.x + (fLenX * 0.05);
                 points.p3.y = points.p2.y + (fLenY * 0.12);
 
-                arucoStatusText += " [台形補正・ポインタ自動追従成功]";
+                arucoStatusText += " [ポインタ自動配置完了]";
                 Minv.delete();
             }
             srcMat.delete(); srcCoords.delete(); dstCoords.delete(); M.delete(); warped.delete();
             grayMat.delete(); threshMat.delete(); contours.delete(); hierarchy.delete();
         } catch(ex) {
-            console.error("OpenCV幾何計算またはポインタ自動移動でエラー:", ex);
-            arucoStatusText += " [幾何計算エラー]";
+            console.error("OpenCV幾何計算エラー:", ex);
         }
     }
     return true;
@@ -374,7 +375,7 @@ function testArUcoNow() {
             }
         }, 4000);
     } else {
-        alert("マーカーが見つかりません。カメラの距離やピント、マーカー外側の白い余白を確認してください。");
+        alert("マーカーが1つも見つかりません。カメラの距離、ピント、マーカー外側の白い余白を確認してください。");
     }
 }
 
@@ -416,10 +417,9 @@ function render() {
         drawStyledText(`M:${idx}`, ox + p.x*scale, oy + p.y*scale - 50*scale, 20*scale);
     });
 
-    if (!isHolding) {
-        ctx.fillStyle = "rgba(0, 255, 0, 0.15)";
-        ctx.fillRect(ox, oy + (540 * scale) - (30 * scale), 1920 * scale, 60 * scale);
-    }
+    // 【緑の帯】常に描画（先端・尾叉の検出基準ガイドラインを絶対に消失させない）
+    ctx.fillStyle = "rgba(0, 255, 0, 0.15)";
+    ctx.fillRect(ox, oy + (540 * scale) - (30 * scale), 1920 * scale, 60 * scale);
     
     const forkPx = Math.hypot(points.p2.x - points.p1.x, points.p2.y - points.p1.y);
     const totalPx = Math.hypot(points.p3.x - points.p1.x, points.p3.y - points.p1.y);
