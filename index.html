@@ -8,16 +8,8 @@
     <style>
         body { margin: 0; overflow: hidden; background: #000; font-family: sans-serif; }
         canvas { display: block; width: 100vw; height: 100vh; touch-action: none; }
-        
-        .controls {
-            position: fixed; top: 0; left: 0; width: 100%; height: 80px;
-            display: flex; z-index: 1000; pointer-events: none;
-        }
-        button {
-            flex: 1; margin: 5px; font-size: 18px; font-weight: bold;
-            border-radius: 8px; border: none; pointer-events: auto;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
-        }
+        .controls { position: fixed; top: 0; left: 0; width: 100%; height: 80px; display: flex; z-index: 1000; pointer-events: none; }
+        button { flex: 1; margin: 5px; font-size: 18px; font-weight: bold; border-radius: 8px; border: none; pointer-events: auto; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
         #btn-ratio { background: #555; color: white; }
         #btn-test { background: #009688; color: white; }
         #btn-cancel { background: #666; color: white; display: none; }
@@ -53,10 +45,12 @@ const lastCapturedFrame = document.createElement('canvas');
 lastCapturedFrame.width = 1920; lastCapturedFrame.height = 1080;
 const lctx = lastCapturedFrame.getContext('2d', { alpha: false });
 
+const offscreen = document.createElement('canvas');
+const octx = offscreen.getContext('2d', { willReadFrequently: true });
+
 let points = {
     p1: {x: 400, y: 540, label: "口先"},
-    p2: {x: 900, y: 540, label: "尾叉"},
-    p3: {x: 1000, y: 640, label: "尾先"}
+    p2: {x: 900, y: 540, label: "尾叉"}
 };
 
 const video = document.getElementById('video');
@@ -95,14 +89,14 @@ function initVoiceRecognition() {
 }
 
 const ARUCO_DICT = {
-    0: [1,0,1,1, 0,1,0,1, 0,0,1,1, 0,0,1,0], 1: [0,0,0,0, 1,1,1,1, 1,0,0,1, 1,0,1,0],
-    2: [0,0,1,1, 0,0,1,1, 0,0,1,0, 1,1,0,1], 3: [1,0,0,1, 1,0,0,1, 0,1,0,0, 0,1,1,0],
-    4: [0,1,0,1, 0,1,0,0, 1,0,0,1, 1,1,1,0], 5: [0,1,1,1, 1,0,0,1, 1,1,0,0, 1,1,0,1],
-    6: [1,0,0,1, 1,1,1,0, 0,0,1,0, 1,1,1,0], 7: [1,1,0,0, 0,1,0,0, 1,1,1,1, 0,0,1,0],
-    8: [0,1,0,1, 1,0,0,1, 1,1,1,0, 1,1,1,0], 9: [1,0,0,1, 1,1,1,0, 1,1,1,0, 0,1,0,1],
-    30: [0,1,0,0, 0,1,0,0, 0,0,0,1, 0,1,0,1], 40: [0,0,0,1, 0,1,1,1, 0,0,0,1, 1,0,0,0],
-    41: [0,0,1,0, 1,0,1,0, 0,0,1,0, 1,0,0,0], 42: [0,0,1,1, 0,0,1,0, 1,0,0,0, 1,1,0,0],
-    43: [0,0,1,1, 1,0,0,0, 1,0,1,1, 0,0,1,0]
+    0:  [1,0,1,1, 0,1,0,1, 0,0,1,1, 0,0,1,0],
+    1:  [0,0,0,0, 1,1,1,1, 1,0,0,1, 1,0,1,0], 2:  [0,0,1,1, 0,0,1,1, 0,0,1,0, 1,1,0,1], 
+    3:  [1,0,0,1, 1,0,0,1, 0,1,0,0, 0,1,1,0], 4:  [0,1,0,1, 0,1,0,0, 1,0,0,1, 1,1,1,0], 
+    5:  [0,1,1,1, 1,0,0,1, 1,1,0,0, 1,1,0,1], 6:  [1,0,0,1, 1,1,1,0, 0,0,1,0, 1,1,1,0], 
+    7:  [1,1,0,0, 0,1,0,0, 1,1,1,1, 0,0,1,0], 8:  [0,1,0,1, 1,0,0,1, 1,1,1,0, 1,1,1,0], 
+    9:  [1,0,0,1, 1,1,1,0, 1,1,1,0, 0,1,0,1], 30: [0,1,0,0, 0,1,0,0, 0,0,0,1, 0,1,0,1], 
+    40: [0,0,0,1, 0,1,1,1, 0,0,0,1, 1,0,0,0], 41: [0,0,1,0, 1,0,1,0, 0,0,1,0, 1,0,0,0], 
+    42: [0,0,1,1, 0,0,1,0, 1,0,0,0, 1,1,0,0], 43: [0,0,1,1, 1,0,0,0, 1,0,1,1, 0,0,1,0]  
 };
 
 function processArUcoDetection(imageSource) {
@@ -113,53 +107,195 @@ function processArUcoDetection(imageSource) {
     rctx.drawImage(imageSource, 0, 0, 1920, 1080);
     let imgData = rctx.getImageData(0, 0, 1920, 1080);
 
-    const w = imgData.width, h = imgData.height, data = imgData.data;
-    const visited = new Uint8Array(w * h);
+    const w = imgData.width; const h = imgData.height; const data = imgData.data;
+    const visited = new Uint8Array(w * h); const step = 8; const binarizeThreshold = 110;
     let mapCorners = {};
     for (let id in ARUCO_DICT) { mapCorners[id] = null; }
 
-    // (ArUco検出ロジックは省略せず実装...以下、検出後処理)
-    // ※簡略化のため中略（実際には元の検出コードが入ります）
-    globalCorners = mapCorners;
-    
-    // 台形補正とフィッティング
-    if (cvReady && mapCorners[40] && mapCorners[41] && mapCorners[42] && mapCorners[43]) {
-        // (OpenCVによるwarpPerspective処理をここに記述)
-        arucoStatusText = "ArUco OK: 自動フィッティング完了";
+    for (let y = step; y < h - step; y += step) {
+        for (let x = step; x < w - step; x += step) {
+            const idx = (y * w + x);
+            if (visited[idx]) continue;
+            const gray = 0.299 * data[idx*4] + 0.587 * data[idx*4+1] + 0.114 * data[idx*4+2];
+            if (gray < binarizeThreshold) {
+                let queue = [[x, y]]; visited[y * w + x] = 1;
+                let count = 0; let minXPlusY = Infinity, tl = null; let maxXMinusY = -Infinity, tr = null;
+                let maxXPlusY = -Infinity, br = null; let minXMinusY = Infinity, bl = null;
+                while (queue.length > 0) {
+                    const [cx, cy] = queue.pop(); count++;
+                    const sum = cx + cy; const diff = cx - cy;
+                    if (sum < minXPlusY)   { minXPlusY = sum; tl = {x: cx, y: cy}; }
+                    if (diff > maxXMinusY) { maxXMinusY = diff; tr = {x: cx, y: cy}; }
+                    if (sum > maxXPlusY)   { maxXPlusY = sum; br = {x: cx, y: cy}; }
+                    if (diff < minXMinusY) { minXMinusY = diff; bl = {x: cx, y: cy}; }
+                    const dirs = [[0,-1], [0,1], [-1,0], [1,0]];
+                    for (let i = 0; i < 4; i++) {
+                        const nx = cx + dirs[i][0]; const ny = cy + dirs[i][1];
+                        if (nx >= 0 && nx < w && ny >= 0 && ny < h) {
+                            const nIdx = ny * w + nx;
+                            if (!visited[nIdx]) {
+                                const nG = 0.299 * data[nIdx*4] + 0.587 * data[nIdx*4+1] + 0.114 * data[nIdx*4+2];
+                                if (nG < binarizeThreshold) { visited[nIdx] = 1; queue.push([nx, ny]); }
+                            }
+                        }
+                    }
+                    if(count > 15000) break;
+                }
+                if (count > 150 && count < (w * h * 0.4) && tl && tr && br && bl) {
+                    let grid = [];
+                    for (let r = 0; r < 6; r++) {
+                        const v = (r + 0.5) / 6;
+                        for (let c = 0; c < 6; c++) {
+                            const u = (c + 0.5) / 6;
+                            const topX = tl.x * (1 - u) + tr.x * u; const topY = tl.y * (1 - u) + tr.y * u;
+                            const botX = bl.x * (1 - u) + br.x * u; const botY = bl.y * (1 - u) + br.y * u;
+                            const px = Math.round(topX * (1 - v) + botX * v); const py = Math.round(topY * (1 - v) + botY * v);
+                            if (px >= 0 && px < w && py >= 0 && py < h) {
+                                const pIdx = (py * w + px) * 4; const pG = 0.299 * data[pIdx] + 0.587 * data[pIdx+1] + 0.114 * data[pIdx+2];
+                                grid.push(pG);
+                            } else { grid.push(255); }
+                        }
+                    }
+                    let gridBits = grid.map(g => g < binarizeThreshold ? 0 : 1);
+                    let borderCount = 0;
+                    for (let r = 0; r < 6; r++) { for (let c = 0; c < 6; c++) { if (r === 0 || r === 5 || c === 0 || c === 5) { if (gridBits[r * 6 + c] === 0) borderCount++; } } }
+                    if (borderCount >= 13) {
+                        let bits4x4 = []; for (let r = 1; r < 5; r++) { for (let c = 1; c < 5; c++) { bits4x4.push(gridBits[r * 6 + c]); } }
+                        let matchedId = null;
+                        for (let id in ARUCO_DICT) {
+                            let dictBits = ARUCO_DICT[id]; let currentBits = [...bits4x4];
+                            for (let rot = 0; rot < 4; rot++) {
+                                let isMatch = true; for (let i = 0; i < 16; i++) { if (currentBits[i] !== dictBits[i]) { isMatch = false; break; } }
+                                if (isMatch) { matchedId = parseInt(id, 10); break; }
+                                let r4 = new Array(16); for (let y4 = 0; y4 < 4; y4++) { for (let x4 = 0; x4 < 4; x4++) { r4[x4 * 4 + (3 - y4)] = currentBits[y4 * 4 + x4]; } }
+                                currentBits = r4;
+                            }
+                            if (matchedId !== null) break;
+                        }
+                        if (matchedId !== null) {
+                            let midX = (tl.x + tr.x + br.x + bl.x) / 4; let midY = (tl.y + tr.y + br.y + bl.y) / 4;
+                            detectedArUcoPoints.push({ x: midX, y: midY });
+                            mapCorners[matchedId] = { x: midX, y: midY, tl: tl, tr: tr, br: br, bl: bl };
+                        }
+                    }
+                }
+            }
+        }
     }
+    globalCorners = mapCorners;
+    if (detectedArUcoPoints.length === 0) { arucoStatusText = `マーカーが見つかりません`; return false; }
     return true;
 }
 
-function render() {
-    const scale = Math.min(canvas.width / 1920, canvas.height / 1080);
-    const ox = (canvas.width - 1920 * scale) / 2;
-    const oy = (canvas.height - 1080 * scale) / 2;
+function detectArUcoAndCalibrate() {
+    processArUcoDetection(lastCapturedFrame);
+}
 
-    ctx.fillStyle = "#000"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+function testArUcoNow() {
+    if (!cvReady) { alert("ライブラリ未読込"); return; }
+    processArUcoDetection(video);
+    if (detectedArUcoPoints.length > 0) {
+        alert("マーカー検出！");
+    } else {
+        alert("マーカー未検出");
+    }
+}
+
+function toggleHold(state) {
+    isHolding = state;
+    if (state) {
+        lctx.drawImage(video, 0, 0, 1920, 1080);
+        detectArUcoAndCalibrate();
+        asyncDetect();
+    } else {
+        detectedArUcoPoints = [];
+        globalCorners = {};
+    }
+    document.getElementById('btn-ratio').style.display = !isHolding ? 'block' : 'none';
+    document.getElementById('btn-test').style.display = !isHolding ? 'block' : 'none';
+    document.getElementById('btn-hold').style.display = !isHolding ? 'block' : 'none';
+    document.getElementById('btn-cancel').style.display = isHolding ? 'block' : 'none';
+    document.getElementById('btn-save').style.display = isHolding ? 'block' : 'none';
+}
+
+async function asyncDetect() {
+    const sw = 480, sh = 270;
+    offscreen.width = sw; offscreen.height = sh;
+    octx.drawImage(lastCapturedFrame, 0, 0, sw, sh);
+    const data = octx.getImageData(0, 0, sw, sh).data;
+    const scanY = 540 * (sh / 1080); 
+    
+    let startX = 10; let endX = sw - 10;
+    if (globalCorners[40] && globalCorners[41] && globalCorners[42] && globalCorners[43]) {
+        const rawMinX = Math.max(globalCorners[40].x, globalCorners[42].x);
+        const rawMaxX = Math.min(globalCorners[41].x, globalCorners[43].x);
+        const safeMargin = 80;
+        startX = Math.max(10, Math.floor((rawMinX + safeMargin) * (sw / 1920)));
+        endX = Math.min(sw - 10, Math.floor((rawMaxX - safeMargin) * (sw / 1920)));
+    }
+    let allMinX = sw, allMaxX = 0;
+    for (let x = startX; x <= endX; x++) {
+        const i = (Math.floor(scanY) * sw + x) * 4; const prevI = (Math.floor(scanY) * sw + (x - 4)) * 4;
+        if (Math.abs(data[i] - data[prevI]) > 20) {
+            if (x < allMinX) allMinX = x; if (x > allMaxX) allMaxX = x;
+        }
+    }
+    if (allMaxX > allMinX + 20) {
+        const scale = 1920 / sw;
+        points.p1.x = allMinX * scale; points.p2.x = allMaxX * scale;
+        points.p1.y = points.p2.y = 540;
+    }
+}
+
+function render() {
+    const stageW = window.innerWidth * window.devicePixelRatio;
+    const stageH = window.innerHeight * window.devicePixelRatio;
+    canvas.width = stageW; canvas.height = stageH;
+    const scale = Math.min(stageW / 1920, stageH / 1080);
+    const ox = (stageW - 1920 * scale) / 2; const oy = (stageH - 1080 * scale) / 2;
+
+    ctx.fillStyle = "#000"; ctx.fillRect(0, 0, stageW, stageH);
     ctx.drawImage(isHolding ? lastCapturedFrame : video, ox, oy, 1920 * scale, 1080 * scale);
 
-    // 領域制限の描画
+    // 緑の領域ガイドライン描画
+    ctx.fillStyle = "rgba(0, 255, 0, 0.15)";
     if (globalCorners[40] && globalCorners[41] && globalCorners[42] && globalCorners[43]) {
-        ctx.fillStyle = "rgba(0, 255, 0, 0.15)";
-        // (領域内のみ緑線を描画する処理)
+        const rawMinX = Math.max(globalCorners[40].x, globalCorners[42].x);
+        const rawMaxX = Math.min(globalCorners[41].x, globalCorners[43].x);
+        const safeMargin = 80;
+        const drawStartX = rawMinX + safeMargin;
+        const drawWidth = (rawMaxX - safeMargin) - drawStartX;
+        if (drawWidth > 0) ctx.fillRect(ox + (drawStartX * scale), oy + (540 * scale) - (30 * scale), drawWidth * scale, 60 * scale);
+    } else {
+        ctx.fillRect(ox, oy + (540 * scale) - (30 * scale), 1920 * scale, 60 * scale);
     }
+
+    // マーカー情報表示
+    detectedArUcoPoints.forEach((p, idx) => {
+        ctx.strokeStyle = "#00ffff"; ctx.lineWidth = 5;
+        ctx.strokeRect(ox + (p.x-40)*scale, oy + (p.y-40)*scale, 80*scale, 80*scale);
+    });
 
     // サイズ表示ボックス
     if (globalCorners[30]) {
-        const sizeCm = ((Math.hypot(points.p2.x - points.p1.x, points.p2.y - points.p1.y) * mmRatio) / 10).toFixed(1);
-        // (赤枠白地ボックスの描画)
+        const forkPx = Math.hypot(points.p2.x - points.p1.x, points.p2.y - points.p1.y);
+        const sizeCm = (forkPx * mmRatio / 10).toFixed(1);
+        const m30 = globalCorners[30];
+        ctx.fillStyle = "white"; ctx.fillRect(ox + m30.x*scale - 50, oy + m30.y*scale - 30, 100, 60);
+        ctx.fillStyle = "black"; ctx.font = "20px sans-serif"; ctx.fillText(sizeCm + "cm", ox + m30.x*scale - 30, oy + m30.y*scale + 5);
     }
-    // (残りのUI描画)
+
+    Object.values(points).forEach(p => {
+        ctx.strokeStyle = "red"; ctx.lineWidth = 4;
+        ctx.beginPath(); ctx.arc(ox + p.x * scale, oy + p.y * scale, 15, 0, Math.PI*2); ctx.stroke();
+    });
+    requestAnimationFrame(render);
 }
 
-function toggleHold(state) { isHolding = state; /* ... */ }
-function finalizeAndSave() { /* ... */ }
-function initTouchEvents() { /* ... */ }
-function renderLoop() { render(); requestAnimationFrame(renderLoop); }
-function toggleRatioUI() { /* ... */ }
-function testArUcoNow() { /* ... */ }
-function drawStyledText(t, x, y, s) { /* ... */ }
-function drawMagnifier(ox, oy, scale, sourceImg) { /* ... */ }
+function renderLoop() { render(); }
+function finalizeAndSave() { const link = document.createElement('a'); link.href = canvas.toDataURL("image/png"); link.download = `fish.png`; link.click(); toggleHold(false); }
+function toggleRatioUI() { const val = prompt("mm/pxを入力", mmRatio); if (val) mmRatio = parseFloat(val); }
+function initTouchEvents() { /* 既存のイベント */ }
 </script>
 </body>
 </html>
