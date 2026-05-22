@@ -44,6 +44,7 @@ let currentNo = 1; let tankId = "1"; let mmRatio = 0.400;
 let isHolding = false; let activePoint = null;
 let cvReady = false;
 let detectedArUcoPoints = [];
+let globalCorners = {}; // 【追加】マーカーの座標を画面全体で共有するための変数
 let testDisplayTimer = null;
 let arucoStatusText = "ArUco: Ready";
 
@@ -58,7 +59,6 @@ const lctx = lastCapturedFrame.getContext('2d', { alpha: false });
 const offscreen = document.createElement('canvas');
 const octx = offscreen.getContext('2d', { willReadFrequently: true });
 
-// 【修正箇所】尾先（p3）を削除し、口先・尾叉の2点のみに変更
 let points = {
     p1: {x: 400, y: 540, label: "口先"},
     p2: {x: 900, y: 540, label: "尾叉"}
@@ -244,6 +244,9 @@ function processArUcoDetection(imageSource) {
         }
     }
 
+    // 【追加】領域制限・基点表示等のためにマーカー情報をグローバルに保持
+    globalCorners = mapCorners;
+
     if (detectedArUcoPoints.length === 0) {
         arucoStatusText = `マーカーが見つかりません`;
         return false;
@@ -285,6 +288,7 @@ function testArUcoNow() {
         testDisplayTimer = setTimeout(() => {
             if (!isHolding) {
                 detectedArUcoPoints = [];
+                globalCorners = {}; // 【追加】タイマーでマーカー情報をクリア
                 arucoStatusText = "ArUco: Ready";
             }
         }, 4000);
@@ -304,6 +308,7 @@ function toggleHold(state) {
         }, 150);
     } else {
         detectedArUcoPoints = [];
+        globalCorners = {}; // 【追加】キャンセル時にマーカー情報をクリア
         arucoStatusText = "ArUco: Ready";
     }
     document.getElementById('btn-ratio').style.display = !isHolding ? 'block' : 'none';
@@ -320,9 +325,22 @@ async function asyncDetect() {
     const data = octx.getImageData(0, 0, sw, sh).data;
     
     const scanY = 540 * (sh / 1080); 
+    
+    // 【仕様変更】エッジスキャンを「40〜43で規定された領域内（安全マージン付き）」に限定
+    let startX = 10;
+    let endX = sw - 10;
+    
+    if (globalCorners[40] && globalCorners[41] && globalCorners[42] && globalCorners[43]) {
+        const rawMinX = Math.max(globalCorners[40].x, globalCorners[42].x);
+        const rawMaxX = Math.min(globalCorners[41].x, globalCorners[43].x);
+        const safeMargin = 80; // 領域の端(トレイ枠など)を誤検知しないためのマージン(px:1920基準)
+        startX = Math.max(10, Math.floor((rawMinX + safeMargin) * (sw / 1920)));
+        endX = Math.min(sw - 10, Math.floor((rawMaxX - safeMargin) * (sw / 1920)));
+    }
+
     let allMinX = sw, allMaxX = 0;
 
-    for (let x = 10; x < sw - 10; x++) {
+    for (let x = startX; x <= endX; x++) {
         const i = (Math.floor(scanY) * sw + x) * 4;
         const prevI = (Math.floor(scanY) * sw + (x - 4)) * 4;
         if (Math.abs(data[i] - data[prevI]) > 20) {
@@ -331,7 +349,6 @@ async function asyncDetect() {
         }
     }
     
-    // 【修正箇所】p3(尾先)の計算を完全に削除。p1(口先)とp2(尾叉)のみを更新
     if (allMaxX > allMinX + 20) {
         const scale = 1920 / sw;
         points.p1.x = allMinX * scale; 
@@ -361,18 +378,70 @@ function render() {
         drawStyledText(`M:${idx}`, ox + p.x*scale, oy + p.y*scale - 50*scale, 20*scale);
     });
 
+    // 【仕様変更】緑のガイドライン線を40〜43番の領域内のみに描画
     ctx.fillStyle = "rgba(0, 255, 0, 0.15)";
-    ctx.fillRect(ox, oy + (540 * scale) - (30 * scale), 1920 * scale, 60 * scale);
+    if (globalCorners[40] && globalCorners[41] && globalCorners[42] && globalCorners[43]) {
+        const rawMinX = Math.max(globalCorners[40].x, globalCorners[42].x);
+        const rawMaxX = Math.min(globalCorners[41].x, globalCorners[43].x);
+        const safeMargin = 80; // 領域の端を除外するマージン
+        const drawStartX = rawMinX + safeMargin;
+        const drawWidth = (rawMaxX - safeMargin) - drawStartX;
+        
+        if (drawWidth > 0) {
+            ctx.fillRect(ox + (drawStartX * scale), oy + (540 * scale) - (30 * scale), drawWidth * scale, 60 * scale);
+        }
+    } else {
+        // マーカー未検出時は全幅表示
+        ctx.fillRect(ox, oy + (540 * scale) - (30 * scale), 1920 * scale, 60 * scale);
+    }
     
-    // 【修正箇所】全長(totalPx)の計算と描画を削除
     const forkPx = Math.hypot(points.p2.x - points.p1.x, points.p2.y - points.p1.y);
     const fSize = canvas.height / 25;
     
     const textY1 = stageH - 350;
     const textY2 = stageH - 280;
     
+    // 【仕様維持】既存のUI情報はそのまま表示
     drawStyledText(`水槽${tankId} No.${String(currentNo).padStart(3, '0')} 尾叉:${(forkPx * mmRatio).toFixed(1)}mm`, 40, textY1, fSize);
     drawStyledText(`Ratio: ${mmRatio.toFixed(4)} | Status: ${arucoStatusText}`, 40, textY2, fSize * 0.5);
+
+    // 【新規機能】マーカー30番を基点としたサイズ出力ボックス（白地・赤枠・黒文字 0.1cm単位）
+    if (globalCorners[30]) {
+        const sizeCm = (forkPx * mmRatio / 10).toFixed(1); 
+        
+        const m30 = globalCorners[30];
+        const boxX = ox + m30.x * scale;
+        const boxY = oy + m30.y * scale;
+        
+        ctx.save();
+        ctx.font = `bold ${fSize * 1.8}px sans-serif`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        
+        const textStr = `${sizeCm} cm`;
+        const metrics = ctx.measureText(textStr);
+        const padX = 20 * scale;
+        const padY = 15 * scale;
+        const boxW = metrics.width + padX * 2;
+        const boxH = fSize * 1.8 + padY * 2;
+        
+        const rectX = boxX - boxW / 2;
+        const rectY = boxY - boxH / 2;
+        
+        // 白地
+        ctx.fillStyle = "white";
+        ctx.fillRect(rectX, rectY, boxW, boxH);
+        
+        // 赤枠
+        ctx.lineWidth = 4 * scale;
+        ctx.strokeStyle = "red";
+        ctx.strokeRect(rectX, rectY, boxW, boxH);
+        
+        // 黒文字
+        ctx.fillStyle = "black";
+        ctx.fillText(textStr, boxX, boxY);
+        ctx.restore();
+    }
 
     Object.values(points).forEach(p => {
         ctx.strokeStyle = "red"; ctx.lineWidth = 4;
