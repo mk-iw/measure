@@ -417,16 +417,20 @@ async function asyncDetect() {
         const data = wctx.getImageData(0, 0, w, h).data;
         
         const scanY = Math.floor(h / 2);
+        const bandHalf = 20;
         let startX = 10;
         let endX = w - 10;
         let allMinX = w, allMaxX = 0;
 
-        for (let x = startX; x <= endX; x++) {
-            const i = (scanY * w + x) * 4;
-            const prevI = (scanY * w + (x - 4)) * 4;
-            if (Math.abs(data[i] - data[prevI]) > 20) {
-                if (x < allMinX) allMinX = x;
-                if (x > allMaxX) allMaxX = x;
+        for (let yy = scanY - bandHalf; yy <= scanY + bandHalf; yy++) {
+
+            for (let x = startX; x <= endX; x++) {
+                const i = (yy * w + x) * 4;
+                const prevI = (yy * w + (x - 4)) * 4;
+                if (Math.abs(data[i] - data[prevI]) > 20) {
+                    if (x < allMinX) allMinX = x;
+                    if (x > allMaxX) allMaxX = x;
+                }
             }
         }
         
