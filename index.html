@@ -252,42 +252,42 @@ function processArUcoDetection(imageSource) {
 
 
     globalCorners = mapCorners;
-    let markerIds = Object.keys(mapCorners).filter(id => id >= 0 && id <= 9 && mapCorners[id]);
+    let ids = Object.keys(globalCorners).filter(id => id <= 9 && globalCorners[id]);
     
-    // 0-9が最低2つ以上ないと信頼できないものとして警告
-    if (markerIds.length < 2) {
+    let ratio0_9 = null;
+    if (ids.length >= 2) {
+        let tp=0, tm=0;
+        for(let i=0; i<ids.length; i++) {
+            for(let j=i+1; j<ids.length; j++) {
+                let dPx = Math.hypot(globalCorners[ids[i]].x - globalCorners[ids[j]].x, globalCorners[ids[i]].y - globalCorners[ids[j]].y);
+                tp += dPx; tm += Math.abs(ids[i]-ids[j]) * 50.0 * printScale;
+            }
+        }
+        ratio0_9 = tm / tp;
+    }
+
+    if (ratio0_9 === null) {
         arucoStatusText = "警告: マーカー不足";
         return false;
     }
 
-    let total_px = 0; let total_mm = 0;
-    for (let i = 0; i < markerIds.length; i++) {
-        for (let j = i + 1; j < markerIds.length; j++) {
-            let id1 = parseInt(markerIds[i]); let id2 = parseInt(markerIds[j]);
-            let dPx = Math.hypot(mapCorners[id1].x - mapCorners[id2].x, mapCorners[id1].y - mapCorners[id2].y);
-            total_px += dPx;
-            total_mm += Math.abs(id1 - id2) * 50.0 * printScale;
-        }
-    }
-
-    mmRatio = total_mm / total_px;
-
-    // マーカー30番（6×6枠サイズ=60mm * printScale）のチェック
-    if (mapCorners[30]) {
-        // 6×6枠を基準としたサイズ計算
-        let edgePx30 = (Math.hypot(mapCorners[30].tl.x-mapCorners[30].tr.x, mapCorners[30].tl.y-mapCorners[30].tr.y) + 
-                        Math.hypot(mapCorners[30].br.x-mapCorners[30].bl.x, mapCorners[30].br.y-mapCorners[30].bl.y)) / 2.0;
-        let ratio_B = (60.0 * printScale) / edgePx30;
+    // マーカー30番（外枠含め60mm）による検算
+    if (globalCorners[30]) {
+        let c = globalCorners[30];
+        let dPx = (Math.hypot(c.tl.x-c.tr.x, c.tl.y-c.tr.y) + Math.hypot(c.bl.x-c.br.x, c.bl.y-c.br.y)) / 2.0;
+        let ratio30 = (60.0 * printScale) / dPx;
         
-        if (Math.abs(mmRatio - ratio_B) / mmRatio > 0.05) {
+        if (Math.abs(ratio0_9 - ratio30) / ratio0_9 > 0.05) {
             arucoStatusText = "警告: 基準不一致";
             return false;
         }
     }
     
+    mmRatio = ratio0_9;
     arucoStatusText = `OK: ${mmRatio.toFixed(3)}mm/px`;
     return true;
 }
+
 
 function warpImageToScale() {
     if (!cvReady || !globalCorners[40] || !globalCorners[41] || !globalCorners[42] || !globalCorners[43]) {
@@ -502,14 +502,13 @@ function render() {
         const padX = 20 * scale; const padY = 15 * scale;
         const boxW = metrics.width + padX * 2; const boxH = fSize * 1.8 + padY * 2;
         
-        const boxX = stageW - boxW / 2 - 20;
-        const boxY = stageH - boxH / 2 - 20;
+        const boxX = stageW - boxW / 2 - 80; 
+        const boxY = stageH - boxH / 2 - 80;
         const rectX = boxX - boxW / 2; const rectY = boxY - boxH / 2;
-        
+    
         ctx.fillStyle = "white"; ctx.fillRect(rectX, rectY, boxW, boxH);
         ctx.lineWidth = 4 * scale; ctx.strokeStyle = "red"; ctx.strokeRect(rectX, rectY, boxW, boxH);
-        ctx.fillStyle = "black"; ctx.fillText(textStr, boxX, boxY);
-        ctx.restore();
+        ctx.fillStyle = "black"; ctx.fillText(sizeCm + " cm", boxX, boxY);
     }
 
     Object.values(points).forEach(p => {
