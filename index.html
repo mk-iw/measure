@@ -456,7 +456,12 @@ async function asyncDetect() {
         for (let x = startX; x <= endX; x++) {
             const i = (Math.floor(scanY) * sw + x) * 4;
             const prevI = (Math.floor(scanY) * sw + (x - 4)) * 4;
-            if (Math.abs(data[i] - data[prevI]) > 20) {
+
+            const diff =
+                Math.abs(data[i] - data[prevI]) +
+                Math.abs(data[i+1] - data[prevI+1]) +
+                Math.abs(data[i+2] - data[prevI+2]);
+            if (diff > 100) {
                 if (x < allMinX) allMinX = x;
                 if (x > allMaxX) allMaxX = x;
             }
@@ -517,8 +522,8 @@ function render() {
         // ===== 測定帯のみ半透明表示 =====
         const bandHalf = 20;
         const bandY = isWarped
-            ? Math.floor(warpedCanvas.height / 2)
-            : 540;
+            ? points.p1.y
+            : points.p1.y;
         ctx.fillStyle = "rgba(0,255,0,0.18)";
         ctx.fillRect(
             ox,
