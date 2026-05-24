@@ -40,7 +40,7 @@
 <canvas id="canvas-measure"></canvas>
 
 <script>
-let currentNo = 1; let tankId = "1"; let mmRatio = 0.400*0.7; 
+let currentNo = 1; let tankId = "1"; let mmRatio = 0.400; 
 let isHolding = false; let activePoint = null;
 let cvReady = false;
 let detectedArUcoPoints = [];
@@ -48,7 +48,10 @@ let globalCorners = {};
 let testDisplayTimer = null;
 let arucoStatusText = "ArUco: Ready";
 
-// 【追加】補正後平面用の変数
+// 【追加・変更点1】A3を1.0とした場合の印刷倍率（A4縮小時は約0.707）
+let printScale = 0.707; 
+
+// 補正後平面用の変数
 let isWarped = false;
 const warpedCanvas = document.createElement('canvas');
 
@@ -250,24 +253,24 @@ function processArUcoDetection(imageSource) {
 
     globalCorners = mapCorners;
 
-    // 【完全改修】マーカーの指定サイズ（0-9: 20mm, 30: 60mm, 40-43: 40mm）に基づく厳密なスケール計算
     let total_px = 0;
     let total_mm = 0;
     const getEdgePx = (c) => (Math.hypot(c.tl.x-c.tr.x, c.tl.y-c.tr.y) + Math.hypot(c.br.x-c.bl.x, c.br.y-c.bl.y) + Math.hypot(c.tl.x-c.bl.x, c.tl.y-c.bl.y) + Math.hypot(c.tr.x-c.br.x, c.tr.y-c.br.y)) / 4.0;
 
     for (let i = 0; i <= 9; i++) {
-        if (mapCorners[i]) { total_px += getEdgePx(mapCorners[i]); total_mm += 20.0*0.7; }
+        // 印刷倍率(printScale)を反映
+        if (mapCorners[i]) { total_px += getEdgePx(mapCorners[i]); total_mm += 20.0 * printScale; }
     }
     if (mapCorners[30]) {
-        total_px += getEdgePx(mapCorners[30]); total_mm += 60.0*0.7;
+        total_px += getEdgePx(mapCorners[30]); total_mm += 60.0 * printScale;
     }
     for (let i = 40; i <= 43; i++) {
-        if (mapCorners[i]) { total_px += getEdgePx(mapCorners[i]); total_mm += 40.0*0.7; }
+        if (mapCorners[i]) { total_px += getEdgePx(mapCorners[i]); total_mm += 40.0 * printScale; }
     }
 
     if (total_mm > 0) {
         let global_px_per_mm = total_px / total_mm;
-        mmRatio = 1.0*0.7 / global_px_per_mm;
+        mmRatio = 1.0 / global_px_per_mm;
         arucoStatusText = `ArUco OK: (${mmRatio.toFixed(4)} mm/px)`;
     } else {
         arucoStatusText = "マーカーが見つかりません";
@@ -276,7 +279,6 @@ function processArUcoDetection(imageSource) {
     return true;
 }
 
-// 【追加】台形補正（Homography）による平面画像の生成
 function warpImageToScale() {
     if (!cvReady || !globalCorners[40] || !globalCorners[41] || !globalCorners[42] || !globalCorners[43]) {
         isWarped = false;
@@ -285,15 +287,12 @@ function warpImageToScale() {
 
     let tl = globalCorners[40], tr = globalCorners[41], br = globalCorners[43], bl = globalCorners[42];
     
-    // ① トレーの四隅（マーカーの外枠）から物理的なサイズを計算
     let topW_px = Math.hypot(tr.tr.x - tl.tl.x, tr.tr.y - tl.tl.y);
     let leftH_px = Math.hypot(bl.bl.x - tl.tl.x, bl.bl.y - tl.tl.y);
     
-    // mmRatio は processArUcoDetection で算出された信頼できる値
     let real_w_mm = topW_px * mmRatio;
     let real_h_mm = leftH_px * mmRatio;
 
-    // ④ mmベース座標系の定義 (1ピクセル = 0.5mm -> density = 2.0)
     const density = 2.0; 
     let tw = Math.round(real_w_mm * density);
     let th = Math.round(real_h_mm * density);
@@ -303,7 +302,6 @@ function warpImageToScale() {
 
     try {
         let srcMat = cv.imread(lastCapturedFrame);
-        // ① 画像座標の4点（外枠を基準）
         let srcCoords = cv.matFromArray(4, 1, cv.CV_32FC2, [
             tl.tl.x, tl.tl.y,
             tr.tr.x, tr.tr.y,
@@ -315,25 +313,20 @@ function warpImageToScale() {
             0, 0, tw, 0, tw, th, 0, th
         ]);
         
-        // ① 3x3 Homography 行列 H を求める
         let M = cv.getPerspectiveTransform(srcCoords, dstCoords);
         let dstMat = new cv.Mat();
         
-        // ② 射影変換の実行
         cv.warpPerspective(srcMat, dstMat, M, new cv.Size(tw, th));
         cv.imshow(warpedCanvas, dstMat);
         
         srcMat.delete(); srcCoords.delete(); dstCoords.delete(); M.delete(); dstMat.delete();
         
         isWarped = true;
-        // 補正平面上では「1px = 0.5mm」で完全に固定されます
-        mmRatio = 1.0*0.7 / density; 
+        mmRatio = 1.0 / density; 
         arucoStatusText = `ArUco OK (補正平面: 1px = ${mmRatio}mm)`;
         
-        // 【補足】マーカー30の中心座標もHomographyで補正後平面へ変換
         if (globalCorners[30]) {
             let cx = globalCorners[30].x, cy = globalCorners[30].y;
-            // 簡易的に補正後のスケールに合わせて配置 (本来は行列計算ですが処理軽量化のため)
             let px_ratio_w = tw / topW_px;
             let px_ratio_h = th / leftH_px;
             globalCorners[30].wx = (cx - tl.tl.x) * px_ratio_w;
@@ -374,7 +367,6 @@ function toggleHold(state) {
     if (state) {
         lctx.drawImage(video, 0, 0, 1920, 1080);
         setTimeout(() => { 
-            // ⑤ 補正前にArUcoを検出し、その座標をもとにHomographyを構築
             detectArUcoAndCalibrate(); 
             warpImageToScale();
             asyncDetect(); 
@@ -393,7 +385,6 @@ function toggleHold(state) {
     document.getElementById('btn-save').style.display = isHolding ? 'block' : 'none';
 }
 
-// ③ 魚体の自動エッジ検出を「補正後画像」上で実行
 async function asyncDetect() {
     if (isWarped) {
         const w = warpedCanvas.width;
@@ -401,7 +392,6 @@ async function asyncDetect() {
         const wctx = warpedCanvas.getContext('2d', { willReadFrequently: true });
         const data = wctx.getImageData(0, 0, w, h).data;
         
-        // 補正後平面の中央を水平走査
         const scanY = Math.floor(h / 2);
         let startX = 10;
         let endX = w - 10;
@@ -425,7 +415,6 @@ async function asyncDetect() {
             points.p1.y = points.p2.y = scanY;
         }
     } else {
-        // 補正失敗時の従来ロジック
         const sw = 480, sh = 270;
         offscreen.width = sw; offscreen.height = sh;
         octx.drawImage(lastCapturedFrame, 0, 0, sw, sh);
@@ -459,12 +448,11 @@ function render() {
 
     ctx.fillStyle = "#000"; ctx.fillRect(0, 0, stageW, stageH);
     
-    // 表示のベースを補正状態に応じて切り替え
     const baseW = (isHolding && isWarped) ? warpedCanvas.width : 1920;
     const baseH = (isHolding && isWarped) ? warpedCanvas.height : 1080;
     let scale = Math.min(stageW / baseW, stageH / baseH);
     
-    if (isHolding && isWarped) scale *= 0.95; // 余白マージン
+    if (isHolding && isWarped) scale *= 0.95; 
 
     const ox = (stageW - baseW * scale) / 2;
     const oy = (stageH - baseH * scale) / 2;
@@ -480,7 +468,6 @@ function render() {
             ctx.strokeRect(ox + (p.x-40)*scale, oy + (p.y-40)*scale, 80*scale, 80*scale);
         });
         
-        // 領域ガイドライン
         if (globalCorners[40] && globalCorners[41] && globalCorners[42] && globalCorners[43]) {
             ctx.fillStyle = "rgba(0, 255, 0, 0.15)";
             ctx.beginPath();
@@ -493,12 +480,10 @@ function render() {
         }
     }
 
-    // サイズ表示ボックス（マーカー30を基準）
-    if (isHolding && isWarped && globalCorners[30] && globalCorners[30].wx) {
+    // 【追加・変更点2】サイズ表示ボックス（画面右下に固定配置）
+    if (isHolding && isWarped) {
         const forkPx = Math.hypot(points.p2.x - points.p1.x, points.p2.y - points.p1.y);
         const sizeCm = (forkPx * mmRatio / 10).toFixed(1); 
-        const boxX = ox + globalCorners[30].wx * scale;
-        const boxY = oy + globalCorners[30].wy * scale;
         
         ctx.save();
         ctx.font = `bold ${fSize * 1.8}px sans-serif`;
@@ -507,6 +492,10 @@ function render() {
         const metrics = ctx.measureText(textStr);
         const padX = 20 * scale; const padY = 15 * scale;
         const boxW = metrics.width + padX * 2; const boxH = fSize * 1.8 + padY * 2;
+        
+        // 画面右下隅（マージン20px）に配置
+        const boxX = stageW - boxW / 2 - 20;
+        const boxY = stageH - boxH / 2 - 20;
         const rectX = boxX - boxW / 2; const rectY = boxY - boxH / 2;
         
         ctx.fillStyle = "white"; ctx.fillRect(rectX, rectY, boxW, boxH);
