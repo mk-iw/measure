@@ -53,7 +53,7 @@ let testDisplayTimer = null;
 let arucoStatusText = "ArUco: Ready";
 
 // 【印刷倍率設定】A3=1.00とし、A4縮小時は0.707を設定
-let printScale = 0.707; 
+let printScale = 0.707 * 58/60; 
 
 let isWarped = false;
 const warpedCanvas = document.createElement('canvas');
@@ -434,7 +434,7 @@ async function asyncDetect() {
             points.p1.x = allMinX; 
 
             // 尾叉の右ズレ補正
-            points.p2.x = allMaxX - 6;
+            points.p2.x = allMaxX - 3;
 
             points.p1.y = points.p2.y = scanY;
         } else {
@@ -462,7 +462,7 @@ async function asyncDetect() {
             points.p1.x = allMinX * scale; 
 
             // 尾叉の右ズレ補正
-            points.p2.x = (allMaxX - 2) * scale;
+            points.p2.x = (allMaxX - 1) * scale;
 
             points.p1.y = points.p2.y = 540;
         }
@@ -525,8 +525,8 @@ function render() {
         const boxW = metrics.width + 80; const boxH = 100;
 
         // 左上へ移動
-        const boxX = stageW - boxW/2 - 260; 
-        const boxY = stageH - boxH/2 - 260;
+        const boxX = stageW - boxW/2 - 360; 
+        const boxY = stageH - boxH/2 - 160;
         
         ctx.fillStyle = "white"; ctx.fillRect(boxX - boxW/2, boxY - boxH/2, boxW, boxH);
         ctx.strokeStyle = "red"; ctx.lineWidth = 6;
@@ -535,7 +535,7 @@ function render() {
     }
 
     const labelSize = canvas.height / 30;
-    const marginL = 80; 
+    const marginL = 140; 
 
     // 下部へ移動
     drawStyledText(`水槽${tankId} No.${String(currentNo).padStart(3, '0')}`, marginL, stageH - 120, labelSize);
