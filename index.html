@@ -502,16 +502,30 @@ function render() {
             ctx.strokeRect(ox + (p.x-40)*scale, oy + (p.y-40)*scale, 80*scale, 80*scale);
         });
         
-        if (globalCorners[40] && globalCorners[41] && globalCorners[42] && globalCorners[43]) {
-            ctx.fillStyle = "rgba(0, 255, 0, 0.15)";
-            ctx.beginPath();
-            ctx.moveTo(ox + globalCorners[40].tl.x * scale, oy + globalCorners[40].tl.y * scale);
-            ctx.lineTo(ox + globalCorners[41].tr.x * scale, oy + globalCorners[41].tr.y * scale);
-            ctx.lineTo(ox + globalCorners[43].br.x * scale, oy + globalCorners[43].br.y * scale);
-            ctx.lineTo(ox + globalCorners[42].bl.x * scale, oy + globalCorners[42].bl.y * scale);
-            ctx.closePath();
-            ctx.fill();
-        }
+    if (globalCorners[40] && globalCorners[41] && globalCorners[42] && globalCorners[43]) {
+        // 外周線のみ
+        ctx.strokeStyle = "rgba(0,255,0,0.8)";
+        ctx.lineWidth = 4;
+
+        ctx.beginPath();
+        ctx.moveTo(ox + globalCorners[40].tl.x * scale, oy + globalCorners[40].tl.y * scale);
+        ctx.lineTo(ox + globalCorners[41].tr.x * scale, oy + globalCorners[41].tr.y * scale);
+        ctx.lineTo(ox + globalCorners[43].br.x * scale, oy + globalCorners[43].br.y * scale);
+        ctx.lineTo(ox + globalCorners[42].bl.x * scale, oy + globalCorners[42].bl.y * scale);
+        ctx.closePath();
+        ctx.stroke();
+        // ===== 測定帯のみ半透明表示 =====
+        const bandHalf = 20;
+        const bandY = isWarped
+            ? Math.floor(warpedCanvas.height / 2)
+            : 540;
+        ctx.fillStyle = "rgba(0,255,0,0.18)";
+        ctx.fillRect(
+            ox,
+            oy + (bandY - bandHalf) * scale,
+            baseW * scale,
+            bandHalf * 2 * scale
+        );
     }
 
     if (arucoStatusText.startsWith("警告")) {
@@ -530,7 +544,7 @@ function render() {
 
         // 左上へ移動
         const boxX = stageW - boxW/2 - 360; 
-        const boxY = stageH - boxH/2 - 160;
+        const boxY = stageH - boxH/2 - 165;
         
         ctx.fillStyle = "white"; ctx.fillRect(boxX - boxW/2, boxY - boxH/2, boxW, boxH);
         ctx.strokeStyle = "red"; ctx.lineWidth = 6;
