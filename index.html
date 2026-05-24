@@ -251,10 +251,10 @@ function processArUcoDetection(imageSource) {
     }
 
 
-// --- processArUcoDetection 内の判定ロジック修正 ---
     globalCorners = mapCorners;
     let ids = Object.keys(globalCorners).filter(id => id <= 9 && globalCorners[id]);
     
+    // 警告ロジック：0-9が不足、または30番との不一致はエラーとして即時返す
     let ratio0_9 = null;
     if (ids.length >= 2) {
         let tp=0, tm=0;
@@ -267,31 +267,22 @@ function processArUcoDetection(imageSource) {
         ratio0_9 = tm / tp;
     }
 
-    let ratio30 = null;
-    if (globalCorners[30]) {
-        let c = globalCorners[30];
-        let dPx = (Math.hypot(c.tl.x-c.tr.x, c.tl.y-c.tr.y) + Math.hypot(c.bl.x-c.br.x, c.bl.y-c.br.y)) / 2.0;
-        ratio30 = (60.0 * printScale) / dPx;
-    }
-
-    // 両方のマーカーが存在し、かつ乖離がある場合
-    if (ratio0_9 !== null && ratio30 !== null) {
-        if (Math.abs(ratio0_9 - ratio30) / ratio0_9 > 0.05) {
-            mmRatio = 0; // 0にして測定不可にする
-            arucoStatusText = "警告: 基準不一致";
-            return false;
-        }
-        mmRatio = ratio0_9;
-    } else if (ratio0_9 !== null) {
-        mmRatio = ratio0_9;
-    } else if (ratio30 !== null) {
-        mmRatio = ratio30;
-    } else {
-        mmRatio = 0;
+    if (ratio0_9 === null) {
         arucoStatusText = "警告: マーカー不足";
         return false;
     }
+
+    if (globalCorners[30]) {
+        let c = globalCorners[30];
+        let dPx = (Math.hypot(c.tl.x-c.tr.x, c.tl.y-c.tr.y) + Math.hypot(c.bl.x-c.br.x, c.bl.y-c.br.y)) / 2.0;
+        let ratio30 = (60.0 * printScale) / dPx;
+        if (Math.abs(ratio0_9 - ratio30) / ratio0_9 > 0.05) {
+            arucoStatusText = "警告: 基準不一致";
+            return false;
+        }
+    }
     
+    mmRatio = ratio0_9;
     arucoStatusText = `OK: ${mmRatio.toFixed(3)}mm/px`;
     return true;
 }
@@ -497,55 +488,50 @@ function render() {
             ctx.closePath();
             ctx.fill();
         }
-    // --- render 内の警告描画修正 (render関数の最後に追加) ---
-        // 警告表示を確実に行う
-        if (arucoStatusText.startsWith("警告")) {
-            ctx.fillStyle = "red";
-            ctx.font = "bold 60px sans-serif";
-            ctx.textAlign = "center";
-            ctx.fillText(arucoStatusText, stageW/2, stageH/2);
-        }
+
+    // 1. 警告の常時表示 (測定不可なら中央に赤文字)
+    if (arucoStatusText.startsWith("警告")) {
+        ctx.fillStyle = "red";
+        ctx.font = "bold 80px sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText(arucoStatusText, stageW/2, stageH/2);
     }
 
-
-    if (isHolding && isWarped) {
+    // 2. 測定結果枠 (右下内側へ配置・保存用)
+    if (isHolding && isWarped && mmRatio > 0) {
         const forkPx = Math.hypot(points.p2.x - points.p1.x, points.p2.y - points.p1.y);
-        const sizeCm = (forkPx * mmRatio / 10).toFixed(1); 
+        const sizeCm = (forkPx * mmRatio / 10).toFixed(1);
+        ctx.font = "bold 60px sans-serif";
+        const metrics = ctx.measureText(sizeCm + " cm");
+        const boxW = metrics.width + 80; const boxH = 100;
+        const boxX = stageW - boxW/2 - 150; 
+        const boxY = stageH - boxH/2 - 150;
         
-        ctx.save();
-        ctx.font = `bold ${fSize * 1.8}px sans-serif`;
-        ctx.textAlign = "center"; ctx.textBaseline = "middle";
-        const textStr = `${sizeCm} cm`;
-        const metrics = ctx.measureText(textStr);
-        const padX = 20 * scale; const padY = 15 * scale;
-        const boxW = metrics.width + padX * 2; const boxH = fSize * 1.8 + padY * 2;
-        
-        const boxX = stageW - boxW / 2 - 80; 
-        const boxY = stageH - boxH / 2 - 80;
-        const rectX = boxX - boxW / 2; const rectY = boxY - boxH / 2;
-    
-        ctx.fillStyle = "white"; ctx.fillRect(rectX, rectY, boxW, boxH);
-        ctx.lineWidth = 4 * scale; ctx.strokeStyle = "red"; ctx.strokeRect(rectX, rectY, boxW, boxH);
-        ctx.fillStyle = "black"; ctx.fillText(sizeCm + " cm", boxX, boxY);
+        ctx.fillStyle = "white"; ctx.fillRect(boxX - boxW/2, boxY - boxH/2, boxW, boxH);
+        ctx.strokeStyle = "red"; ctx.lineWidth = 6;
+        ctx.strokeRect(boxX - boxW/2, boxY - boxH/2, boxW, boxH);
+        ctx.fillStyle = "black"; ctx.textAlign = "center"; ctx.fillText(sizeCm + " cm", boxX, boxY + 20);
     }
 
+    // 3. 画面左上：水槽Noとステータスを確実に表示（画面外切断防止）
+    const fSize = canvas.height / 30;
+    const marginL = 80; // 左端から確実に離す
+    drawStyledText(`水槽${tankId} No.${String(currentNo).padStart(3, '0')}`, marginL, 100, fSize);
+    drawStyledText(`Status: ${arucoStatusText}`, marginL, 100 + fSize * 1.2, fSize * 0.7);
+
+    // 4. ポイント（口先・尾叉）の描画
     Object.values(points).forEach(p => {
         ctx.strokeStyle = "red"; ctx.lineWidth = 4;
         ctx.beginPath(); ctx.arc(ox + p.x * scale, oy + p.y * scale, 15, 0, Math.PI*2); ctx.stroke();
         drawStyledText(p.label, ox + p.x * scale + 20, oy + p.y * scale - 20, fSize * 0.4);
     });
 
-    const forkPx = Math.hypot(points.p2.x - points.p1.x, points.p2.y - points.p1.y);
-    const textY1 = stageH - 350;
-    const textY2 = stageH - 280;
-    
-    drawStyledText(`水槽${tankId} No.${String(currentNo).padStart(3, '0')} 尾叉:${(forkPx * mmRatio).toFixed(1)}mm`, 40, textY1, fSize);
-    drawStyledText(`Ratio: ${mmRatio.toFixed(4)} | Status: ${arucoStatusText}`, 40, textY2, fSize * 0.5);
-
+    // 5. 拡大鏡
     if (activePoint && isHolding) {
         drawMagnifier(ox, oy, scale, isWarped ? warpedCanvas : lastCapturedFrame);
     }
 }
+
 
 function drawMagnifier(ox, oy, scale, sourceImg) {
     const mag = 3;
