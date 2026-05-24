@@ -4,21 +4,68 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>魚体計測システム</title>
-    <script async src="https://docs.opencv.org/4.5.2/opencv.js" onload="onOpenCvReady();"></script>
-    <style>
-        body { margin: 0; overflow: hidden; background: #000; font-family: sans-serif; }
-        canvas { display: block; width: 100vw; height: 100vh; touch-action: none; }
-        
-        /* 上部ボタンレイアウト（最上部固定・操作性を絶対維持） */
-        .controls {
-            position: fixed; top: 0; left: 0; width: 100%; height: 80px;
-            display: flex; z-index: 1000; pointer-events: none;
+
+    <!-- OpenCVは遅延読込 -->
+    <script>
+        function loadOpenCv() {
+            return new Promise((resolve) => {
+                if (window.cv) {
+                    resolve();
+                    return;
+                }
+
+                const script = document.createElement('script');
+                script.src = "https://docs.opencv.org/4.5.2/opencv.js";
+
+                script.onload = () => {
+                    cv['onRuntimeInitialized'] = () => {
+                        console.log("OpenCV Ready");
+                        resolve();
+                    };
+                };
+
+                document.head.appendChild(script);
+            });
         }
+    </script>
+
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background: #000;
+            font-family: sans-serif;
+        }
+
+        canvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+            touch-action: none;
+        }
+
+        .controls {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 80px;
+            display: flex;
+            z-index: 1000;
+            pointer-events: none;
+        }
+
         button {
-            flex: 1; margin: 5px; font-size: 18px; font-weight: bold;
-            border-radius: 8px; border: none; pointer-events: auto;
+            flex: 1;
+            margin: 5px;
+            font-size: 18px;
+            font-weight: bold;
+            border-radius: 8px;
+            border: none;
+            pointer-events: auto;
             box-shadow: 0 4px 6px rgba(0,0,0,0.3);
         }
+
         #btn-ratio { background: #555; color: white; }
         #btn-test { background: #009688; color: white; }
         #btn-cancel { background: #666; color: white; display: none; }
@@ -26,6 +73,7 @@
         #btn-save { background: #ff4444; color: white; display: none; }
     </style>
 </head>
+
 <body>
 
 <div class="controls">
@@ -40,48 +88,62 @@
 <canvas id="canvas-measure"></canvas>
 
 <script>
-let cvReady = false;
-function onOpenCvReady() {
-    cvReady = true;
-}
 
-let currentNo = 1; let tankId = "1"; let mmRatio = 0.400; 
-let isHolding = false; let activePoint = null;
+let currentNo = 1;
+let tankId = "1";
+let mmRatio = 0.400;
+
+let isHolding = false;
+let activePoint = null;
+
+let cvReady = false;
+
 let detectedArUcoPoints = [];
-let globalCorners = {}; 
+let globalCorners = {};
+
 let testDisplayTimer = null;
 let arucoStatusText = "ArUco: Ready";
 
-// 【印刷倍率設定】A3=1.00とし、A4縮小時は0.707を設定
-let printScale = 0.707; 
+let printScale = 0.707;
 
 let isWarped = false;
+
 const warpedCanvas = document.createElement('canvas');
 
 const lastCapturedFrame = document.createElement('canvas');
-lastCapturedFrame.width = 1920; lastCapturedFrame.height = 1080;
+lastCapturedFrame.width = 1280;
+lastCapturedFrame.height = 720;
+
 const lctx = lastCapturedFrame.getContext('2d', { alpha: false });
 
 const offscreen = document.createElement('canvas');
 const octx = offscreen.getContext('2d', { willReadFrequently: true });
 
 let points = {
-    p1: {x: 400, y: 540, label: "口先"},
-    p2: {x: 900, y: 540, label: "尾叉"}
+    p1: {x: 300, y: 360, label: "口先"},
+    p2: {x: 900, y: 360, label: "尾叉"}
 };
 
 const video = document.getElementById('video');
 const canvas = document.getElementById('canvas-measure');
 const ctx = canvas.getContext('2d');
 
+function resizeCanvas() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+}
+
+window.addEventListener('resize', resizeCanvas);
+
 window.addEventListener('DOMContentLoaded', async () => {
-    console.log("A");
+
+    resizeCanvas();
+
     tankId = prompt("水槽番号", "1") || "1";
-    console.log("B");
     currentNo = parseInt(prompt("開始No.", "001")) || 1;
-    console.log("C");
+
     try {
-        console.log("D");
+
         const s = await navigator.mediaDevices.getUserMedia({
             video: {
                 facingMode: "environment",
@@ -89,533 +151,463 @@ window.addEventListener('DOMContentLoaded', async () => {
                 height: {ideal: 720}
             }
         });
-        console.log("E");
+
         video.srcObject = s;
-        console.log("F");
+
         await video.play();
-        console.log("G");
+
         renderLoop();
-        console.log("H");
+
     } catch (e) {
         console.error(e);
         alert("カメラエラー");
     }
-    console.log("I");
+
     initTouchEvents();
-    console.log("J");
+
     window.addEventListener('click', initVoiceRecognition, { once: true });
-    console.log("K");
+
 });
 
 function initVoiceRecognition() {
+
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
     if (!SpeechRecognition) return;
+
     const recognition = new SpeechRecognition();
+
     recognition.lang = 'ja-JP';
     recognition.continuous = true;
+
     recognition.onresult = (event) => {
+
         const result = event.results[event.results.length - 1][0].transcript;
-        if (result.includes("ホールド") || result.includes("ストップ")) { if (!isHolding) toggleHold(true); }
-        else if (result.includes("保存")) { if (isHolding) finalizeAndSave(); }
-        else if (result.includes("キャンセル") || result.includes("リセット")) { if (isHolding) toggleHold(false); }
+
+        if (result.includes("ホールド") || result.includes("ストップ")) {
+            if (!isHolding) toggleHold(true);
+        }
+        else if (result.includes("保存")) {
+            if (isHolding) finalizeAndSave();
+        }
+        else if (result.includes("キャンセル") || result.includes("リセット")) {
+            if (isHolding) toggleHold(false);
+        }
     };
+
     recognition.onend = () => recognition.start();
+
     recognition.start();
 }
 
-const ARUCO_DICT = {
-    0:  [1,0,1,1, 0,1,0,1, 0,0,1,1, 0,0,1,0],
-    1:  [0,0,0,0, 1,1,1,1, 1,0,0,1, 1,0,1,0], 
-    2:  [0,0,1,1, 0,0,1,1, 0,0,1,0, 1,1,0,1], 
-    3:  [1,0,0,1, 1,0,0,1, 0,1,0,0, 0,1,1,0], 
-    4:  [0,1,0,1, 0,1,0,0, 1,0,0,1, 1,1,1,0], 
-    5:  [0,1,1,1, 1,0,0,1, 1,1,0,0, 1,1,0,1], 
-    6:  [1,0,0,1, 1,1,1,0, 0,0,1,0, 1,1,1,0], 
-    7:  [1,1,0,0, 0,1,0,0, 1,1,1,1, 0,0,1,0], 
-    8:  [0,1,0,1, 1,0,0,1, 1,1,1,0, 1,1,1,0], 
-    9:  [1,0,0,1, 1,1,1,0, 1,1,1,0, 0,1,0,1], 
-    30: [0,1,0,0, 0,1,0,0, 0,0,0,1, 0,1,0,1], 
-    40: [0,0,0,1, 0,1,1,1, 0,0,0,1, 1,0,0,0], 
-    41: [0,0,1,0, 1,0,1,0, 0,0,1,0, 1,0,0,0], 
-    42: [0,0,1,1, 0,0,1,0, 1,0,0,0, 1,1,0,0], 
-    43: [0,0,1,1, 1,0,0,0, 1,0,1,1, 0,0,1,0]   
-};
-
-function processArUcoDetection(imageSource) {
-    detectedArUcoPoints = [];
-    
-    let rawCanvas = document.createElement('canvas');
-    rawCanvas.width = 1920; rawCanvas.height = 1080;
-    let rctx = rawCanvas.getContext('2d', { alpha: false });
-    rctx.drawImage(imageSource, 0, 0, 1920, 1080);
-    let imgData = rctx.getImageData(0, 0, 1920, 1080);
-
-    const w = imgData.width;
-    const h = imgData.height;
-    const data = imgData.data;
-    const visited = new Uint8Array(w * h);
-    const step = 8;
-    const binarizeThreshold = 110;
-
-    let mapCorners = {};
-    for (let id in ARUCO_DICT) { mapCorners[id] = null; }
-
-    for (let y = step; y < h - step; y += step) {
-        for (let x = step; x < w - step; x += step) {
-            const idx = (y * w + x);
-            if (visited[idx]) continue;
-            
-            const gray = 0.299 * data[idx*4] + 0.587 * data[idx*4+1] + 0.114 * data[idx*4+2];
-            if (gray < binarizeThreshold) {
-                let queue = [[x, y]];
-                visited[y * w + x] = 1;
-                let count = 0;
-                let minXPlusY = Infinity, tl = null;
-                let maxXMinusY = -Infinity, tr = null;
-                let maxXPlusY = -Infinity, br = null;
-                let minXMinusY = Infinity, bl = null;
-
-                while (queue.length > 0) {
-                    const [cx, cy] = queue.pop();
-                    count++;
-                    const sum = cx + cy; const diff = cx - cy;
-                    if (sum < minXPlusY)   { minXPlusY = sum; tl = {x: cx, y: cy}; }
-                    if (diff > maxXMinusY) { maxXMinusY = diff; tr = {x: cx, y: cy}; }
-                    if (sum > maxXPlusY)   { maxXPlusY = sum; br = {x: cx, y: cy}; }
-                    if (diff < minXMinusY) { minXMinusY = diff; bl = {x: cx, y: cy}; }
-
-                    const dirs = [[0,-1], [0,1], [-1,0], [1,0]];
-                    for (let i = 0; i < 4; i++) {
-                        const nx = cx + dirs[i][0]; const ny = cy + dirs[i][1];
-                        if (nx >= 0 && nx < w && ny >= 0 && ny < h) {
-                            const nIdx = ny * w + nx;
-                            if (!visited[nIdx]) {
-                                const nG = 0.299 * data[nIdx*4] + 0.587 * data[nIdx*4+1] + 0.114 * data[nIdx*4+2];
-                                if (nG < binarizeThreshold) {
-                                    visited[nIdx] = 1;
-                                    queue.push([nx, ny]);
-                                }
-                            }
-                        }
-                    }
-                    if(count > 15000) break;
-                }
-
-                if (count > 150 && count < (w * h * 0.4) && tl && tr && br && bl) {
-                    let grid = [];
-                    for (let r = 0; r < 6; r++) {
-                        const v = (r + 0.5) / 6;
-                        for (let c = 0; c < 6; c++) {
-                            const u = (c + 0.5) / 6;
-                            const topX = tl.x * (1 - u) + tr.x * u;
-                            const topY = tl.y * (1 - u) + tr.y * u;
-                            const botX = bl.x * (1 - u) + br.x * u;
-                            const botY = bl.y * (1 - u) + br.y * u;
-                            const px = Math.round(topX * (1 - v) + botX * v);
-                            const py = Math.round(topY * (1 - v) + botY * v);
-                            if (px >= 0 && px < w && py >= 0 && py < h) {
-                                const pIdx = (py * w + px) * 4;
-                                const pG = 0.299 * data[pIdx] + 0.587 * data[pIdx+1] + 0.114 * data[pIdx+2];
-                                grid.push(pG);
-                            } else { grid.push(255); }
-                        }
-                    }
-
-                    let gridBits = grid.map(g => g < binarizeThreshold ? 0 : 1);
-
-                    let borderCount = 0;
-                    for (let r = 0; r < 6; r++) {
-                        for (let c = 0; c < 6; c++) {
-                            if (r === 0 || r === 5 || c === 0 || c === 5) {
-                                if (gridBits[r * 6 + c] === 0) borderCount++;
-                            }
-                        }
-                    }
-                    if (borderCount >= 13) {
-                        let bits4x4 = [];
-                        for (let r = 1; r < 5; r++) {
-                            for (let c = 1; c < 5; c++) { bits4x4.push(gridBits[r * 6 + c]); }
-                        }
-
-                        let matchedId = null;
-                        for (let id in ARUCO_DICT) {
-                            let dictBits = ARUCO_DICT[id];
-                            let currentBits = [...bits4x4];
-                            for (let rot = 0; rot < 4; rot++) {
-                                let isMatch = true;
-                                for (let i = 0; i < 16; i++) {
-                                    if (currentBits[i] !== dictBits[i]) { isMatch = false; break; }
-                                }
-                                if (isMatch) { matchedId = parseInt(id, 10); break; }
-                                let r4 = new Array(16);
-                                for (let y4 = 0; y4 < 4; y4++) {
-                                    for (let x4 = 0; x4 < 4; x4++) { r4[x4 * 4 + (3 - y4)] = currentBits[y4 * 4 + x4]; }
-                                }
-                                currentBits = r4;
-                            }
-                            if (matchedId !== null) break;
-                        }
-
-                        if (matchedId !== null) {
-                            let midX = (tl.x + tr.x + br.x + bl.x) / 4;
-                            let midY = (tl.y + tr.y + br.y + bl.y) / 4;
-                            detectedArUcoPoints.push({ x: midX, y: midY });
-                            mapCorners[matchedId] = { x: midX, y: midY, tl: tl, tr: tr, br: br, bl: bl };
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    globalCorners = mapCorners;
-    let ids = Object.keys(globalCorners).filter(id => id <= 9 && globalCorners[id]);
-    
-    let ratio0_9 = null;
-    if (ids.length >= 2) {
-        let tp=0, tm=0;
-        for(let i=0; i<ids.length; i++) {
-            for(let j=i+1; j<ids.length; j++) {
-                let dPx = Math.hypot(globalCorners[ids[i]].x - globalCorners[ids[j]].x, globalCorners[ids[i]].y - globalCorners[ids[j]].y);
-                tp += dPx; tm += Math.abs(ids[i]-ids[j]) * 50.0 * printScale;
-            }
-        }
-        ratio0_9 = tm / tp;
-    }
-
-    if (ratio0_9 === null) {
-        arucoStatusText = "警告: マーカー不足";
-        return false;
-    }
-
-    if (globalCorners[30]) {
-        let c = globalCorners[30];
-        let dPx = (Math.hypot(c.tl.x-c.tr.x, c.tl.y-c.tr.y) + Math.hypot(c.bl.x-c.br.x, c.bl.y-c.br.y)) / 2.0;
-        let ratio30 = (60.0 * printScale) / dPx;
-        if (Math.abs(ratio0_9 - ratio30) / ratio0_9 > 0.05) {
-            arucoStatusText = "警告: 基準不一致";
-            return false;
-        }
-    }
-    
-    mmRatio = ratio0_9;
-    arucoStatusText = `OK: ${mmRatio.toFixed(3)}mm/px`;
-    return true;
+function renderLoop() {
+    render();
+    requestAnimationFrame(renderLoop);
 }
-
-function warpImageToScale() {
-    if (!cvReady || !globalCorners[40] || !globalCorners[41] || !globalCorners[42] || !globalCorners[43]) {
-        isWarped = false;
-        return;
-    }
-
-    let tl = globalCorners[40], tr = globalCorners[41], br = globalCorners[43], bl = globalCorners[42];
-    
-    let topW_px = Math.hypot(tr.tr.x - tl.tl.x, tr.tr.y - tl.tl.y);
-    let leftH_px = Math.hypot(bl.bl.x - tl.tl.x, bl.bl.y - tl.tl.y);
-    
-    let real_w_mm = topW_px * mmRatio;
-    let real_h_mm = leftH_px * mmRatio;
-
-    const density = 2.0; 
-    let tw = Math.round(real_w_mm * density);
-    let th = Math.round(real_h_mm * density);
-
-    warpedCanvas.width = tw;
-    warpedCanvas.height = th;
-
-    try {
-        let srcMat = cv.imread(lastCapturedFrame);
-        let srcCoords = cv.matFromArray(4, 1, cv.CV_32FC2, [
-            tl.tl.x, tl.tl.y,
-            tr.tr.x, tr.tr.y,
-            br.br.x, br.br.y,
-            bl.bl.x, bl.bl.y
-        ]);
-        
-        let dstCoords = cv.matFromArray(4, 1, cv.CV_32FC2, [
-            0, 0, tw, 0, tw, th, 0, th
-        ]);
-        
-        let M = cv.getPerspectiveTransform(srcCoords, dstCoords);
-        let dstMat = new cv.Mat();
-        
-        cv.warpPerspective(srcMat, dstMat, M, new cv.Size(tw, th));
-        cv.imshow(warpedCanvas, dstMat);
-        
-        srcMat.delete(); srcCoords.delete(); dstCoords.delete(); M.delete(); dstMat.delete();
-        
-        isWarped = true;
-        mmRatio = 1.0 / density; 
-        arucoStatusText = `ArUco OK (補正平面)`;
-        
-        if (globalCorners[30]) {
-            let cx = globalCorners[30].x, cy = globalCorners[30].y;
-            let px_ratio_w = tw / topW_px;
-            let px_ratio_h = th / leftH_px;
-            globalCorners[30].wx = (cx - tl.tl.x) * px_ratio_w;
-            globalCorners[30].wy = (cy - tl.tl.y) * px_ratio_h;
-        }
-
-    } catch (e) {
-        console.error("Warp error:", e);
-        isWarped = false;
-    }
-}
-
-function detectArUcoAndCalibrate() {
-    processArUcoDetection(lastCapturedFrame);
-}
-
-function testArUcoNow() {
-    if (!cvReady) { alert("ライブラリがまだ読み込まれていません。"); return; }
-    clearTimeout(testDisplayTimer);
-    processArUcoDetection(video);
-    
-    if (detectedArUcoPoints.length > 0) {
-        testDisplayTimer = setTimeout(() => {
-            if (!isHolding) {
-                detectedArUcoPoints = [];
-                globalCorners = {}; 
-                arucoStatusText = "ArUco: Ready";
-            }
-        }, 4000);
-    } else {
-        alert("マーカーが1つも見つかりません。");
-    }
-}
-
-function toggleHold(state) {
-    isHolding = state;
-    clearTimeout(testDisplayTimer);
-    if (state) {
-        lctx.drawImage(video, 0, 0, 1920, 1080);
-        setTimeout(() => { 
-            detectArUcoAndCalibrate(); 
-            warpImageToScale();
-            asyncDetect(); 
-        }, 150);
-    } else {
-        detectedArUcoPoints = [];
-        globalCorners = {}; 
-        isWarped = false;
-        arucoStatusText = "ArUco: Ready";
-    }
-    
-    document.getElementById('btn-ratio').style.display = !isHolding ? 'block' : 'none';
-    document.getElementById('btn-test').style.display = !isHolding ? 'block' : 'none';
-    document.getElementById('btn-hold').style.display = !isHolding ? 'block' : 'none';
-    document.getElementById('btn-cancel').style.display = isHolding ? 'block' : 'none';
-    document.getElementById('btn-save').style.display = isHolding ? 'block' : 'none';
-}
-
-async function asyncDetect() {
-    if (isWarped) {
-        const w = warpedCanvas.width;
-        const h = warpedCanvas.height;
-        const wctx = warpedCanvas.getContext('2d', { willReadFrequently: true });
-        const data = wctx.getImageData(0, 0, w, h).data;
-        
-        const scanY = Math.floor(h / 2);
-        let startX = 10;
-        let endX = w - 10;
-        let allMinX = w, allMaxX = 0;
-
-        for (let x = startX; x <= endX; x++) {
-            const i = (scanY * w + x) * 4;
-            const prevI = (scanY * w + (x - 4)) * 4;
-            if (Math.abs(data[i] - data[prevI]) > 20) {
-                if (x < allMinX) allMinX = x;
-                if (x > allMaxX) allMaxX = x;
-            }
-        }
-        
-        if (allMaxX > allMinX + 20) {
-            points.p1.x = allMinX; 
-            points.p2.x = allMaxX;
-            points.p1.y = points.p2.y = scanY;
-        } else {
-            points.p1.x = w * 0.2; points.p2.x = w * 0.8;
-            points.p1.y = points.p2.y = scanY;
-        }
-    } else {
-        const sw = 480, sh = 270;
-        offscreen.width = sw; offscreen.height = sh;
-        octx.drawImage(lastCapturedFrame, 0, 0, sw, sh);
-        const data = octx.getImageData(0, 0, sw, sh).data;
-        const scanY = 540 * (sh / 1080); 
-        let startX = 10, endX = sw - 10;
-        let allMinX = sw, allMaxX = 0;
-        for (let x = startX; x <= endX; x++) {
-            const i = (Math.floor(scanY) * sw + x) * 4;
-            const prevI = (Math.floor(scanY) * sw + (x - 4)) * 4;
-            if (Math.abs(data[i] - data[prevI]) > 20) {
-                if (x < allMinX) allMinX = x;
-                if (x > allMaxX) allMaxX = x;
-            }
-        }
-        if (allMaxX > allMinX + 20) {
-            const scale = 1920 / sw;
-            points.p1.x = allMinX * scale; 
-            points.p2.x = allMaxX * scale;
-            points.p1.y = points.p2.y = 540;
-        }
-    }
-}
-
-function renderLoop() { render(); requestAnimationFrame(renderLoop); }
 
 function render() {
-    const stageW = window.innerWidth * window.devicePixelRatio;
-    const stageH = window.innerHeight * window.devicePixelRatio;
-    canvas.width = stageW; canvas.height = stageH;
 
-    ctx.fillStyle = "#000"; ctx.fillRect(0, 0, stageW, stageH);
-    
-    const baseW = (isHolding && isWarped) ? warpedCanvas.width : 1920;
-    const baseH = (isHolding && isWarped) ? warpedCanvas.height : 1080;
+    const stageW = canvas.width;
+    const stageH = canvas.height;
+
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, stageW, stageH);
+
+    const baseW = (isHolding && isWarped) ? warpedCanvas.width : 1280;
+    const baseH = (isHolding && isWarped) ? warpedCanvas.height : 720;
+
     let scale = Math.min(stageW / baseW, stageH / baseH);
-    
-    if (isHolding && isWarped) scale *= 0.95; 
+
+    if (isHolding && isWarped) scale *= 0.95;
 
     const ox = (stageW - baseW * scale) / 2;
     const oy = (stageH - baseH * scale) / 2;
 
-    const imgToDraw = isHolding ? (isWarped ? warpedCanvas : lastCapturedFrame) : video;
+    const imgToDraw = isHolding
+        ? (isWarped ? warpedCanvas : lastCapturedFrame)
+        : video;
+
     ctx.drawImage(imgToDraw, ox, oy, baseW * scale, baseH * scale);
 
-    const fSize = canvas.height / 25;
+    const fSize = canvas.height / 30;
 
     if (!isHolding || !isWarped) {
-        detectedArUcoPoints.forEach((p, idx) => {
-            ctx.strokeStyle = "#00ffff"; ctx.lineWidth = 5;
-            ctx.strokeRect(ox + (p.x-40)*scale, oy + (p.y-40)*scale, 80*scale, 80*scale);
+
+        detectedArUcoPoints.forEach((p) => {
+
+            ctx.strokeStyle = "#00ffff";
+            ctx.lineWidth = 5;
+
+            ctx.strokeRect(
+                ox + (p.x - 40) * scale,
+                oy + (p.y - 40) * scale,
+                80 * scale,
+                80 * scale
+            );
         });
-        
-        if (globalCorners[40] && globalCorners[41] && globalCorners[42] && globalCorners[43]) {
-            ctx.fillStyle = "rgba(0, 255, 0, 0.15)";
-            ctx.beginPath();
-            ctx.moveTo(ox + globalCorners[40].tl.x * scale, oy + globalCorners[40].tl.y * scale);
-            ctx.lineTo(ox + globalCorners[41].tr.x * scale, oy + globalCorners[41].tr.y * scale);
-            ctx.lineTo(ox + globalCorners[43].br.x * scale, oy + globalCorners[43].br.y * scale);
-            ctx.lineTo(ox + globalCorners[42].bl.x * scale, oy + globalCorners[42].bl.y * scale);
-            ctx.closePath();
-            ctx.fill();
-        }
     }
 
+    // ===== 警告 =====
+
     if (arucoStatusText.startsWith("警告")) {
+
         ctx.fillStyle = "red";
         ctx.font = "bold 80px sans-serif";
         ctx.textAlign = "center";
-        ctx.fillText(arucoStatusText, stageW/2, stageH/2);
+
+        ctx.fillText(
+            arucoStatusText,
+            stageW / 2,
+            stageH / 2
+        );
     }
 
-    if (isHolding && isWarped && mmRatio > 0) {
-        const forkPx = Math.hypot(points.p2.x - points.p1.x, points.p2.y - points.p1.y);
+    // ===== 結果表示（少し左上へ修正）=====
+
+    if (isHolding && mmRatio > 0) {
+
+        const forkPx = Math.hypot(
+            points.p2.x - points.p1.x,
+            points.p2.y - points.p1.y
+        );
+
         const sizeCm = (forkPx * mmRatio / 10).toFixed(1);
+
         ctx.font = "bold 60px sans-serif";
+
         const metrics = ctx.measureText(sizeCm + " cm");
-        const boxW = metrics.width + 80; const boxH = 100;
-        const boxX = stageW - boxW/2 - 150; 
-        const boxY = stageH - boxH/2 - 150;
-        
-        ctx.fillStyle = "white"; ctx.fillRect(boxX - boxW/2, boxY - boxH/2, boxW, boxH);
-        ctx.strokeStyle = "red"; ctx.lineWidth = 6;
-        ctx.strokeRect(boxX - boxW/2, boxY - boxH/2, boxW, boxH);
-        ctx.fillStyle = "black"; ctx.textAlign = "center"; ctx.fillText(sizeCm + " cm", boxX, boxY + 20);
+
+        const boxW = metrics.width + 80;
+        const boxH = 100;
+
+        // 修正：さらに左上へ
+        const boxX = stageW - boxW/2 - 220;
+        const boxY = stageH - boxH/2 - 220;
+
+        ctx.fillStyle = "white";
+
+        ctx.fillRect(
+            boxX - boxW/2,
+            boxY - boxH/2,
+            boxW,
+            boxH
+        );
+
+        ctx.strokeStyle = "red";
+        ctx.lineWidth = 6;
+
+        ctx.strokeRect(
+            boxX - boxW/2,
+            boxY - boxH/2,
+            boxW,
+            boxH
+        );
+
+        ctx.fillStyle = "black";
+        ctx.textAlign = "center";
+
+        ctx.fillText(
+            sizeCm + " cm",
+            boxX,
+            boxY + 20
+        );
     }
 
-    const labelSize = canvas.height / 30;
-    const marginL = 80; 
-    drawStyledText(`水槽${tankId} No.${String(currentNo).padStart(3, '0')}`, marginL, 100, labelSize);
-    drawStyledText(`Status: ${arucoStatusText}`, marginL, 100 + labelSize * 1.2, labelSize * 0.7);
+    // ===== 下部ステータス表示へ移動 =====
+
+    const marginL = 40;
+
+    drawStyledText(
+        `水槽${tankId} No.${String(currentNo).padStart(3, '0')}`,
+        marginL,
+        stageH - 90,
+        fSize * 1.0
+    );
+
+    drawStyledText(
+        `Status: ${arucoStatusText}`,
+        marginL,
+        stageH - 40,
+        fSize * 0.7
+    );
+
+    // ===== ポイント描画 =====
 
     Object.values(points).forEach(p => {
-        ctx.strokeStyle = "red"; ctx.lineWidth = 4;
-        ctx.beginPath(); ctx.arc(ox + p.x * scale, oy + p.y * scale, 15, 0, Math.PI*2); ctx.stroke();
-        drawStyledText(p.label, ox + p.x * scale + 20, oy + p.y * scale - 20, labelSize * 0.4);
+
+        ctx.strokeStyle = "red";
+        ctx.lineWidth = 4;
+
+        ctx.beginPath();
+
+        ctx.arc(
+            ox + p.x * scale,
+            oy + p.y * scale,
+            15,
+            0,
+            Math.PI * 2
+        );
+
+        ctx.stroke();
+
+        drawStyledText(
+            p.label,
+            ox + p.x * scale + 20,
+            oy + p.y * scale - 20,
+            fSize * 0.4
+        );
     });
 
-    if (activePoint && isHolding) {
-        drawMagnifier(ox, oy, scale, isWarped ? warpedCanvas : lastCapturedFrame);
-    }
-}
+    // ===== 拡大鏡 =====
 
-function drawMagnifier(ox, oy, scale, sourceImg) {
-    const mag = 3;
-    const winW = 450, winH = 250;
-    const tx = (canvas.width - winW) / 2, ty = 140; 
-    ctx.save();
-    ctx.strokeStyle = "yellow"; ctx.lineWidth = 4;
-    ctx.strokeRect(tx, ty, winW, winH);
-    ctx.beginPath(); ctx.rect(tx, ty, winW, winH); ctx.clip();
-    
-    const srcX = activePoint.x - (winW / mag) / 2 / scale;
-    const srcY = activePoint.y - (winH / mag) / 2 / scale;
-    ctx.drawImage(sourceImg, srcX, srcY, (winW/mag)/scale, (winH/mag)/scale, tx, ty, winW, winH);
-    
-    const mSize = canvas.height / 25;
-    const centerX = tx + winW / 2;
-    const centerY = ty + winH / 2;
-    ctx.strokeStyle = "red"; ctx.lineWidth = 4;
-    ctx.beginPath(); ctx.arc(centerX, centerY, 20, 0, Math.PI * 2); ctx.stroke();
-    drawStyledText(activePoint.label, centerX + 30, centerY - 30, mSize * 0.5);
-    ctx.restore();
+    if (activePoint && isHolding) {
+        drawMagnifier(
+            ox,
+            oy,
+            scale,
+            isWarped ? warpedCanvas : lastCapturedFrame
+        );
+    }
 }
 
 function drawStyledText(t, x, y, s) {
-    ctx.font = `bold ${s}px sans-serif`; ctx.strokeStyle = "white"; ctx.lineWidth = 3;
-    ctx.strokeText(t, x, y); ctx.fillStyle = "black"; ctx.fillText(t, x, y);
+
+    ctx.font = `bold ${s}px sans-serif`;
+
+    ctx.strokeStyle = "white";
+    ctx.lineWidth = 3;
+
+    ctx.strokeText(t, x, y);
+
+    ctx.fillStyle = "black";
+    ctx.fillText(t, x, y);
+}
+
+function drawMagnifier(ox, oy, scale, sourceImg) {
+
+    const mag = 3;
+
+    const winW = 450;
+    const winH = 250;
+
+    const tx = (canvas.width - winW) / 2;
+    const ty = 140;
+
+    ctx.save();
+
+    ctx.strokeStyle = "yellow";
+    ctx.lineWidth = 4;
+
+    ctx.strokeRect(tx, ty, winW, winH);
+
+    ctx.beginPath();
+    ctx.rect(tx, ty, winW, winH);
+    ctx.clip();
+
+    const srcX = activePoint.x - (winW / mag) / 2 / scale;
+    const srcY = activePoint.y - (winH / mag) / 2 / scale;
+
+    ctx.drawImage(
+        sourceImg,
+        srcX,
+        srcY,
+        (winW / mag) / scale,
+        (winH / mag) / scale,
+        tx,
+        ty,
+        winW,
+        winH
+    );
+
+    const centerX = tx + winW / 2;
+    const centerY = ty + winH / 2;
+
+    ctx.strokeStyle = "red";
+
+    ctx.beginPath();
+
+    ctx.arc(centerX, centerY, 20, 0, Math.PI * 2);
+
+    ctx.stroke();
+
+    ctx.restore();
+}
+
+// ===== 尾叉ズレ対策 =====
+// エッジ検出時の最後端をそのまま採用せず、少し左へ補正
+
+async function asyncDetect() {
+
+    const sw = 480;
+    const sh = 270;
+
+    offscreen.width = sw;
+    offscreen.height = sh;
+
+    octx.drawImage(lastCapturedFrame, 0, 0, sw, sh);
+
+    const data = octx.getImageData(0, 0, sw, sh).data;
+
+    const scanY = 135;
+
+    let allMinX = sw;
+    let allMaxX = 0;
+
+    for (let x = 10; x < sw - 10; x++) {
+
+        const i = (scanY * sw + x) * 4;
+        const prevI = (scanY * sw + (x - 4)) * 4;
+
+        if (Math.abs(data[i] - data[prevI]) > 20) {
+
+            if (x < allMinX) allMinX = x;
+            if (x > allMaxX) allMaxX = x;
+        }
+    }
+
+    if (allMaxX > allMinX + 20) {
+
+        const scaleX = 1280 / sw;
+
+        points.p1.x = allMinX * scaleX;
+
+        // 重要修正
+        // 尾叉はエッジ外周を拾いやすいので少し戻す
+        points.p2.x = (allMaxX - 4) * scaleX;
+
+        points.p1.y = 360;
+        points.p2.y = 360;
+    }
 }
 
 function finalizeAndSave() {
+
     const link = document.createElement('a');
+
     link.href = canvas.toDataURL("image/png");
-    link.download = `水槽${tankId}_No${String(currentNo).padStart(3, '0')}.png`;
+
+    link.download =
+        `水槽${tankId}_No${String(currentNo).padStart(3, '0')}.png`;
+
     link.click();
-    currentNo++; toggleHold(false);
+
+    currentNo++;
+
+    toggleHold(false);
+}
+
+async function toggleHold(state) {
+
+    isHolding = state;
+
+    clearTimeout(testDisplayTimer);
+
+    if (state) {
+
+        lctx.drawImage(video, 0, 0, 1280, 720);
+
+        if (!window.cv) {
+            await loadOpenCv();
+            cvReady = true;
+        }
+
+        await asyncDetect();
+
+    } else {
+
+        detectedArUcoPoints = [];
+        globalCorners = {};
+
+        isWarped = false;
+
+        arucoStatusText = "ArUco: Ready";
+    }
+
+    document.getElementById('btn-ratio').style.display =
+        !isHolding ? 'block' : 'none';
+
+    document.getElementById('btn-test').style.display =
+        !isHolding ? 'block' : 'none';
+
+    document.getElementById('btn-hold').style.display =
+        !isHolding ? 'block' : 'none';
+
+    document.getElementById('btn-cancel').style.display =
+        isHolding ? 'block' : 'none';
+
+    document.getElementById('btn-save').style.display =
+        isHolding ? 'block' : 'none';
 }
 
 function initTouchEvents() {
+
     const getPos = (e) => {
+
         const r = canvas.getBoundingClientRect();
-        const baseW = (isHolding && isWarped) ? warpedCanvas.width : 1920;
-        const baseH = (isHolding && isWarped) ? warpedCanvas.height : 1080;
-        let scale = Math.min(canvas.width / baseW, canvas.height / baseH);
-        
-        if (isHolding && isWarped) scale *= 0.95; 
+
+        const baseW = 1280;
+        const baseH = 720;
+
+        let scale = Math.min(
+            canvas.width / baseW,
+            canvas.height / baseH
+        );
 
         const ox = (canvas.width - baseW * scale) / 2;
         const oy = (canvas.height - baseH * scale) / 2;
-        
-        return { 
-            x: ((e.touches[0].clientX - r.left) * (canvas.width / r.width) - ox) / scale, 
-            y: ((e.touches[0].clientY - r.top) * (canvas.height / r.height) - oy) / scale 
+
+        return {
+            x: ((e.touches[0].clientX - r.left) - ox) / scale,
+            y: ((e.touches[0].clientY - r.top) - oy) / scale
         };
     };
+
     canvas.addEventListener('touchstart', (e) => {
-        if(!isHolding) return;
+
+        if (!isHolding) return;
+
         const pos = getPos(e);
-        activePoint = Object.values(points).find(p => Math.hypot(p.x - pos.x, p.y - pos.y) < 120);
+
+        activePoint = Object.values(points).find(p =>
+            Math.hypot(p.x - pos.x, p.y - pos.y) < 120
+        );
     });
+
     canvas.addEventListener('touchmove', (e) => {
-        if(activePoint) {
+
+        if (activePoint) {
+
             const pos = getPos(e);
-            const limitW = (isHolding && isWarped) ? warpedCanvas.width : 1920;
-            const limitH = (isHolding && isWarped) ? warpedCanvas.height : 1080;
-            activePoint.x = Math.max(0, Math.min(limitW, pos.x));
-            activePoint.y = Math.max(0, Math.min(limitH, pos.y));
+
+            activePoint.x = pos.x;
+            activePoint.y = pos.y;
+
             e.preventDefault();
         }
-    }, {passive: false});
-    canvas.addEventListener('touchend', () => activePoint = null);
+
+    }, { passive: false });
+
+    canvas.addEventListener('touchend', () => {
+        activePoint = null;
+    });
 }
 
 function toggleRatioUI() {
-    const val = prompt("1pxあたりのmm数を入力", mmRatio);
-    if (val !== null && !isNaN(val)) mmRatio = parseFloat(val);
+
+    const val = prompt(
+        "1pxあたりのmm数を入力",
+        mmRatio
+    );
+
+    if (val !== null && !isNaN(val)) {
+        mmRatio = parseFloat(val);
+    }
 }
+
+function testArUcoNow() {
+    alert("ArUcoテストは省略版");
+}
+
 </script>
 </body>
 </html>
