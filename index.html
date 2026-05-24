@@ -40,9 +40,13 @@
 <canvas id="canvas-measure"></canvas>
 
 <script>
+let cvReady = false;
+function onOpenCvReady() {
+    cvReady = true;
+}
+
 let currentNo = 1; let tankId = "1"; let mmRatio = 0.400; 
 let isHolding = false; let activePoint = null;
-let cvReady = false;
 let detectedArUcoPoints = [];
 let globalCorners = {}; 
 let testDisplayTimer = null;
@@ -53,10 +57,6 @@ let printScale = 0.707;
 
 let isWarped = false;
 const warpedCanvas = document.createElement('canvas');
-
-function onOpenCvReady() {
-    cvReady = true;
-}
 
 const lastCapturedFrame = document.createElement('canvas');
 lastCapturedFrame.width = 1920; lastCapturedFrame.height = 1080;
@@ -120,7 +120,7 @@ const ARUCO_DICT = {
     40: [0,0,0,1, 0,1,1,1, 0,0,0,1, 1,0,0,0], 
     41: [0,0,1,0, 1,0,1,0, 0,0,1,0, 1,0,0,0], 
     42: [0,0,1,1, 0,0,1,0, 1,0,0,0, 1,1,0,0], 
-    43: [0,0,1,1, 1,0,0,0, 1,0,1,1, 0,0,1,0]  
+    43: [0,0,1,1, 1,0,0,0, 1,0,1,1, 0,0,1,0]   
 };
 
 function processArUcoDetection(imageSource) {
@@ -250,11 +250,9 @@ function processArUcoDetection(imageSource) {
         }
     }
 
-
     globalCorners = mapCorners;
     let ids = Object.keys(globalCorners).filter(id => id <= 9 && globalCorners[id]);
     
-    // 警告ロジック：0-9が不足、または30番との不一致はエラーとして即時返す
     let ratio0_9 = null;
     if (ids.length >= 2) {
         let tp=0, tm=0;
@@ -286,8 +284,6 @@ function processArUcoDetection(imageSource) {
     arucoStatusText = `OK: ${mmRatio.toFixed(3)}mm/px`;
     return true;
 }
-
-
 
 function warpImageToScale() {
     if (!cvReady || !globalCorners[40] || !globalCorners[41] || !globalCorners[42] || !globalCorners[43]) {
@@ -488,8 +484,8 @@ function render() {
             ctx.closePath();
             ctx.fill();
         }
+    }
 
-    // 1. 警告の常時表示 (測定不可なら中央に赤文字)
     if (arucoStatusText.startsWith("警告")) {
         ctx.fillStyle = "red";
         ctx.font = "bold 80px sans-serif";
@@ -497,7 +493,6 @@ function render() {
         ctx.fillText(arucoStatusText, stageW/2, stageH/2);
     }
 
-    // 2. 測定結果枠 (右下内側へ配置・保存用)
     if (isHolding && isWarped && mmRatio > 0) {
         const forkPx = Math.hypot(points.p2.x - points.p1.x, points.p2.y - points.p1.y);
         const sizeCm = (forkPx * mmRatio / 10).toFixed(1);
@@ -513,25 +508,21 @@ function render() {
         ctx.fillStyle = "black"; ctx.textAlign = "center"; ctx.fillText(sizeCm + " cm", boxX, boxY + 20);
     }
 
-    // 3. 画面左上：水槽Noとステータスを確実に表示（画面外切断防止）
-    const fSize = canvas.height / 30;
-    const marginL = 80; // 左端から確実に離す
-    drawStyledText(`水槽${tankId} No.${String(currentNo).padStart(3, '0')}`, marginL, 100, fSize);
-    drawStyledText(`Status: ${arucoStatusText}`, marginL, 100 + fSize * 1.2, fSize * 0.7);
+    const labelSize = canvas.height / 30;
+    const marginL = 80; 
+    drawStyledText(`水槽${tankId} No.${String(currentNo).padStart(3, '0')}`, marginL, 100, labelSize);
+    drawStyledText(`Status: ${arucoStatusText}`, marginL, 100 + labelSize * 1.2, labelSize * 0.7);
 
-    // 4. ポイント（口先・尾叉）の描画
     Object.values(points).forEach(p => {
         ctx.strokeStyle = "red"; ctx.lineWidth = 4;
         ctx.beginPath(); ctx.arc(ox + p.x * scale, oy + p.y * scale, 15, 0, Math.PI*2); ctx.stroke();
-        drawStyledText(p.label, ox + p.x * scale + 20, oy + p.y * scale - 20, fSize * 0.4);
+        drawStyledText(p.label, ox + p.x * scale + 20, oy + p.y * scale - 20, labelSize * 0.4);
     });
 
-    // 5. 拡大鏡
     if (activePoint && isHolding) {
         drawMagnifier(ox, oy, scale, isWarped ? warpedCanvas : lastCapturedFrame);
     }
 }
-
 
 function drawMagnifier(ox, oy, scale, sourceImg) {
     const mag = 3;
@@ -546,12 +537,12 @@ function drawMagnifier(ox, oy, scale, sourceImg) {
     const srcY = activePoint.y - (winH / mag) / 2 / scale;
     ctx.drawImage(sourceImg, srcX, srcY, (winW/mag)/scale, (winH/mag)/scale, tx, ty, winW, winH);
     
-    const fSize = canvas.height / 25;
+    const mSize = canvas.height / 25;
     const centerX = tx + winW / 2;
     const centerY = ty + winH / 2;
     ctx.strokeStyle = "red"; ctx.lineWidth = 4;
     ctx.beginPath(); ctx.arc(centerX, centerY, 20, 0, Math.PI * 2); ctx.stroke();
-    drawStyledText(activePoint.label, centerX + 30, centerY - 30, fSize * 0.5);
+    drawStyledText(activePoint.label, centerX + 30, centerY - 30, mSize * 0.5);
     ctx.restore();
 }
 
