@@ -250,29 +250,54 @@ function processArUcoDetection(imageSource) {
         }
     }
 
+
     globalCorners = mapCorners;
 
     let total_px = 0;
     let total_mm = 0;
+    let validPairs = 0;
 
-    // マーカー0-9番の連番間距離（50mm * printScale）を算出の基準にする
-    for (let i = 0; i <= 8; i++) {
-        if (mapCorners[i] && mapCorners[i+1]) {
-            let dPx = Math.hypot(mapCorners[i].x - mapCorners[i+1].x, mapCorners[i].y - mapCorners[i+1].y);
+    // 1. マーカー0-9番のすべてのペアを検証して距離を累積
+    const markerIds = Object.keys(mapCorners).filter(id => id >= 0 && id <= 9 && mapCorners[id]);
+    for (let i = 0; i < markerIds.length; i++) {
+        for (let j = i + 1; j < markerIds.length; j++) {
+            let id1 = parseInt(markerIds[i]);
+            let id2 = parseInt(markerIds[j]);
+            let dPx = Math.hypot(mapCorners[id1].x - mapCorners[id2].x, mapCorners[id1].y - mapCorners[id2].y);
+            let dMm = Math.abs(id1 - id2) * 50.0 * printScale;
             total_px += dPx;
-            total_mm += 50.0 * printScale;
+            total_mm += dMm;
+            validPairs++;
         }
     }
 
-    if (total_mm > 0) {
-        mmRatio = total_mm / total_px;
-        arucoStatusText = `ArUco OK: (${mmRatio.toFixed(4)} mm/px)`;
-    } else {
+    if (total_mm === 0) {
         arucoStatusText = "マーカーが見つかりません";
         return false;
     }
+
+    let ratio_A = total_mm / total_px;
+    mmRatio = ratio_A;
+
+    // 2. マーカー30番（60mm×printScale）との整合性チェック
+    if (mapCorners[30]) {
+        let edgePx30 = (Math.hypot(mapCorners[30].tl.x-mapCorners[30].tr.x, mapCorners[30].tl.y-mapCorners[30].tr.y) + 
+                        Math.hypot(mapCorners[30].br.x-mapCorners[30].bl.x, mapCorners[30].br.y-mapCorners[30].bl.y)) / 2.0;
+        let ratio_B = (60.0 * printScale) / edgePx30;
+        
+        // 差異が5%以上なら警告
+        if (Math.abs(ratio_A - ratio_B) / ratio_A > 0.05) {
+            arucoStatusText = "警告：計測基準不一致";
+        } else {
+            arucoStatusText = `ArUco OK: (${mmRatio.toFixed(4)} mm/px)`;
+        }
+    } else {
+        arucoStatusText = `ArUco OK: (${mmRatio.toFixed(4)} mm/px)`;
+    }
+
     return true;
 }
+
 
 function warpImageToScale() {
     if (!cvReady || !globalCorners[40] || !globalCorners[41] || !globalCorners[42] || !globalCorners[43]) {
