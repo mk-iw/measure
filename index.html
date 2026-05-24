@@ -40,7 +40,7 @@
 <canvas id="canvas-measure"></canvas>
 
 <script>
-let currentNo = 1; let tankId = "1"; let mmRatio = 0.400; 
+let currentNo = 1; let tankId = "1"; let mmRatio = 0.400*0.7; 
 let isHolding = false; let activePoint = null;
 let cvReady = false;
 let detectedArUcoPoints = [];
@@ -256,18 +256,18 @@ function processArUcoDetection(imageSource) {
     const getEdgePx = (c) => (Math.hypot(c.tl.x-c.tr.x, c.tl.y-c.tr.y) + Math.hypot(c.br.x-c.bl.x, c.br.y-c.bl.y) + Math.hypot(c.tl.x-c.bl.x, c.tl.y-c.bl.y) + Math.hypot(c.tr.x-c.br.x, c.tr.y-c.br.y)) / 4.0;
 
     for (let i = 0; i <= 9; i++) {
-        if (mapCorners[i]) { total_px += getEdgePx(mapCorners[i]); total_mm += 20.0; }
+        if (mapCorners[i]) { total_px += getEdgePx(mapCorners[i]); total_mm += 20.0*0.7; }
     }
     if (mapCorners[30]) {
-        total_px += getEdgePx(mapCorners[30]); total_mm += 60.0;
+        total_px += getEdgePx(mapCorners[30]); total_mm += 60.0*0.7;
     }
     for (let i = 40; i <= 43; i++) {
-        if (mapCorners[i]) { total_px += getEdgePx(mapCorners[i]); total_mm += 40.0; }
+        if (mapCorners[i]) { total_px += getEdgePx(mapCorners[i]); total_mm += 40.0*0.7; }
     }
 
     if (total_mm > 0) {
         let global_px_per_mm = total_px / total_mm;
-        mmRatio = 1.0 / global_px_per_mm;
+        mmRatio = 1.0*0.7 / global_px_per_mm;
         arucoStatusText = `ArUco OK: (${mmRatio.toFixed(4)} mm/px)`;
     } else {
         arucoStatusText = "マーカーが見つかりません";
@@ -327,7 +327,7 @@ function warpImageToScale() {
         
         isWarped = true;
         // 補正平面上では「1px = 0.5mm」で完全に固定されます
-        mmRatio = 1.0 / density; 
+        mmRatio = 1.0*0.7 / density; 
         arucoStatusText = `ArUco OK (補正平面: 1px = ${mmRatio}mm)`;
         
         // 【補足】マーカー30の中心座標もHomographyで補正後平面へ変換
