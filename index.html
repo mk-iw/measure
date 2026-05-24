@@ -79,7 +79,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     currentNo = parseInt(prompt("開始No.", "001")) || 1;
     try {
         const s = await navigator.mediaDevices.getUserMedia({
-            video: { facingMode: "environment", width: {ideal: 1920}, height: {ideal: 1080} }
+            video: { facingMode: "environment", width: {ideal: 1280}, height: {ideal: 720} }
         });
         video.srcObject = s;
         video.play();
